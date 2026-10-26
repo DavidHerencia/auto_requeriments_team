@@ -207,3 +207,41 @@ Después:
 Los checkpoints antiguos con `correccion_fallida` por este bug no disponen
 del XML capturado localmente; deben recuperarse de los chats existentes si
 se quiere evitar otra generación. Ningún archivo real ni secreto va a Git.
+
+## Corrección final de nombres y control de XML incompleto
+
+Al terminar la respuesta de HERO, el RDA captura y valida el XML, **antes**
+de modificar nombres. Solo cambia dos atributos de nombre:
+- `semantic:process@name`
+- `semantic:lane@name` de la única lane principal con
+  `id="Lane_Principal"` o `id="LanePrincipal"`.
+
+Ambos reciben exactamente `id_n5 + " " + nombre_proceso`, sin sanear
+el texto interno del XML. Se validan ambos atributos tras la modificación,
+exigiendo un único proceso y una lane principal dentro del mismo. Se
+conservan la serialización original, los IDs, namespaces y los atributos
+`definitions.name`, que **no** se modifican por no estar incluidos
+en el requisito. El nombre del **archivo** sí se sanea para Windows y
+termina en ` - Detalle.xml`.
+
+Los dos prompts incluyen la instrucción de completar un XML incompleto
+usando solo información disponible y, cuando no sea posible por falta
+de información, responder exactamente:
+`incompleto - no se puede generar porque falta demasiada info`.
+
+El segundo prompt termina con la alternativa explícita de entregar
+XML completo para copiar/pegar. Solo se envía si la primera respuesta
+finalizada no contiene XML válido **y no indica incompleto**.
+Ambos envíos usan `_enviar`: un único `Enter` y detección de un
+turno nuevo y finalizado, no tiempos fijos ni reenvíos a ciegas.
+
+Si HERO responde exactamente la frase de incompleto (admitiendo
+comillas/puntuación y variantes de guion), se registra
+`estado=incompleto` y `motivo` en el checkpoint, sin segundo
+prompt ni reintento. Fallos de XML real conservan
+`correccion_fallida`; fallos de posprocesamiento conservan
+`postprocesamiento_pendiente` con el XML capturado.
+
+Prueba de edición sobre el XML completo aportado en el chat: proceso y
+lane normalizados, namespaces y nombres de otras lanes intactos; el
+XML real no se incluye en Git.

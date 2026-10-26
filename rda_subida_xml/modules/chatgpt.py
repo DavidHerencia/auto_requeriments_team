@@ -21,11 +21,26 @@ from config import CHROME_PROFILE
 from modules.download_xmls import validar
 
 LOG = logging.getLogger(__name__)
-INICIAL = ('Corrige el xml usando y siguiendo las instrucciones de "BPMN ARIS XML Repair". '
-           'Dame solamente el xml listo para descargar sin nada mas o en caso de no poder '
-           'solo ponmelo para copiar y pegar.')
-RECUPERAR = ('Dame solamente el xml listo para descargar sin nada mas o en caso de no poder '
-            'solo ponmelo para copiar y pegar.')
+MENSAJE_INCOMPLETO = 'incompleto - no se puede generar porque falta demasiada info'
+REGLA_INCOMPLETO = (
+    'Si el XML esta incompleto, intenta completarlo usando la informacion disponible, '
+    'sin inventar datos del proceso. Si falta demasiada informacion y es imposible '
+    'generarlo, responde UNICAMENTE: "'
+    + MENSAJE_INCOMPLETO + '".'
+)
+INICIAL = (
+    'Corrige el XML adjunto usando y siguiendo las instrucciones de '
+    '"BPMN ARIS XML Repair". Dame solamente el XML listo para descargar '
+    'sin nada mas o, en caso de no poder, ponmelo completo para copiar y pegar. '
+    + REGLA_INCOMPLETO
+)
+RECUPERAR = (
+    'Dame solamente el XML listo para descargar sin nada mas o, '
+    'en caso de no poder, ponmelo completo para copiar y pegar. '
+    + REGLA_INCOMPLETO
+    + ' Si no tienes otra opcion disponible, si, dame el XML para copiar y yo lo pego.'
+)
+
 ARCHIVO = 'input[type="file"][aria-label="Adjuntar archivos"]'
 EDITOR = 'div[contenteditable="true"][aria-label="Pregunta a ChatGPT"]'
 ENVIAR = '[data-testid="send-button"]'
@@ -41,6 +56,17 @@ RESERVADOS = {'CON', 'PRN', 'AUX', 'NUL'} | {
 
 class SalidaSinXml(ValueError):
     """Respuesta completa, pero sin un unico XML utilizable."""
+
+
+class RespuestaIncompleta(ValueError):
+    """HERO indico explicitamente que faltan demasiados datos; no reintentar."""
+
+
+def es_respuesta_incompleta(texto):
+    """Detecta el mensaje acordado, sin marcar como incompleto un XML real."""
+    limpio = re.sub(r'\s+', ' ', texto).strip().strip(' *' + chr(96) + '"\'' + '.!')
+    limpio = limpio.casefold().replace('–', '-').replace('—', '-')
+    return limpio == MENSAJE_INCOMPLETO
 
 
 class ResultadoIncierto(RuntimeError):
@@ -135,6 +161,81 @@ def corregir_lane(texto, id_n5, nombre_proceso):
     if len(verificadas) != 1 or verificadas[0].attrib.get('name') != nombre:
         raise ErrorPostprocesamiento('No se verifico el nuevo nombre de la lane principal')
     LOG.info('Postprocesamiento XML correcto: lane_id=%s', id_lane)
+    return resultado
+
+
+def corregir_nombres_bpmn(texto, id_n5, nombre_proceso):
+    """Normaliza process.name y lane principal.name, sin reserializar XML.
+
+    Exige exactamente un BPMN process y una lane principal, ubicada DENTRO de
+    ese proceso. Conserva IDs, namespaces, etiquetas y el resto del XML.
+    """
+    try:
+        raiz = ET.fromstring(texto)
+    except ET.ParseError as exc:
+        raise ErrorPostprocesamiento('XML de entrada invalido') from exc
+
+    procesos = [x for x in raiz.iter() if x.tag.rsplit('}', 1)[-1] == 'process']
+    if len(procesos) != 1:
+        raise ErrorPostprocesamiento(f'Se esperaba un unico BPMN process; encontrados {len(procesos)}')
+    proceso = procesos[0]
+    lanes = [
+        x for x in proceso.iter()
+        if x.tag.rsplit('}', 1)[-1] == 'lane'
+        and x.attrib.get('id') in {'LanePrincipal', 'Lane_Principal'}
+    ]
+    if len(lanes) != 1:
+        raise ErrorPostprocesamiento('No se encontro una unica lane principal dentro del proceso')
+
+    nombre = f'{id_n5} {nombre_proceso}'
+    # Aprovecha el cambio minimo de lane, previamente validado.
+    editado = corregir_lane(texto, id_n5, nombre_proceso)
+
+    # Buscar solamente el tag de inicio BPMN <process>, no definitions ni
+    # documentacion; tolerar atributos entrecomillados con > en el texto.
+    tags = re.finditer(
+        r'<(?P<tag>[A-Za-z_][\w.:-]*)(?:[^>"\x27]|"[^"]*"|\x27[^\x27]*\x27)*>',
+        editado, flags=re.S
+    )
+    procesos_tags = [
+        match for match in tags
+        if match.group('tag').rsplit(':', 1)[-1] == 'process'
+    ]
+    if len(procesos_tags) != 1:
+        raise ErrorPostprocesamiento('No se pudo localizar un unico tag process')
+    match = procesos_tags[0]
+    atributos = list(re.finditer(
+        r'(?<![\w:.-])name\s*=\s*(?:"[^"]*"|\x27[^\x27]*\x27)',
+        match.group(), flags=re.S
+    ))
+    if len(atributos) != 1:
+        raise ErrorPostprocesamiento('El tag process requiere un unico atributo name')
+    atributo = atributos[0]
+    etiqueta = (
+        match.group()[:atributo.start()]
+        + 'name=' + quoteattr(nombre)
+        + match.group()[atributo.end():]
+    )
+    resultado = editado[:match.start()] + etiqueta + editado[match.end():]
+
+    try:
+        verificado = ET.fromstring(resultado)
+    except ET.ParseError as exc:
+        raise ErrorPostprocesamiento('XML invalido tras normalizar nombres') from exc
+    proc_final = [x for x in verificado.iter() if x.tag.rsplit('}', 1)[-1] == 'process']
+    lanes_final = [
+        x for x in proc_final[0].iter()
+        if x.tag.rsplit('}', 1)[-1] == 'lane'
+        and x.attrib.get('id') in {'LanePrincipal', 'Lane_Principal'}
+    ] if len(proc_final) == 1 else []
+    if (
+        len(proc_final) != 1
+        or len(lanes_final) != 1
+        or proc_final[0].attrib.get('name') != nombre
+        or lanes_final[0].attrib.get('name') != nombre
+    ):
+        raise ErrorPostprocesamiento('No se verificaron ambos nombres BPMN')
+    LOG.info('Postprocesamiento XML correcto: process.name y lane.name sincronizados')
     return resultado
 
 
@@ -442,6 +543,8 @@ def _leer_resultado(page, nodo, config, temporal):
             'El contenedor del mensaje no es unico o aun no esta disponible'
         )
     cuerpo = contenedor.first
+    if es_respuesta_incompleta(cuerpo.inner_text()):
+        raise RespuestaIncompleta(MENSAJE_INCOMPLETO)
 
     selector_archivo = config.get('gpt_descarga_selector') or (
         'button[aria-label="Descargar archivo"], a[download], a[href$=".xml"]'
@@ -571,7 +674,7 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                     escribir_json(ruta, trabajos)
                     LOG.info('Registro %s: XML de HERO capturado y persistido (%s caracteres)', n, len(texto))
 
-                    xml_final = corregir_lane(texto, registro['id_n5'], registro['nombre_proceso'])
+                    xml_final = corregir_nombres_bpmn(texto, registro['id_n5'], registro['nombre_proceso'])
                     final.parent.mkdir(parents=True, exist_ok=True)
                     with final.open('x', encoding='utf-8') as f:
                         f.write(xml_final)
@@ -581,7 +684,10 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                         xml_corregido_ruta=str(final)
                     )
                     registro.pop('motivo', None)
-                    LOG.info('Registro %s: lane principal actualizada y XML definitivo guardado', n)
+                    LOG.info('Registro %s: process y lane actualizados; XML definitivo guardado', n)
+                except RespuestaIncompleta as e:
+                    registro.update(estado='incompleto', motivo=MENSAJE_INCOMPLETO)
+                    LOG.warning('Registro %s: HERO indico informacion insuficiente; sin segundo envio', n)
                 except SalidaSinXml as e:
                     registro.update(estado='correccion_fallida', motivo=str(e))
                     LOG.warning('Registro %s: respuesta de HERO sin XML recuperable: %s', n, e)
