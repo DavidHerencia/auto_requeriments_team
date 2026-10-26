@@ -107,15 +107,53 @@ def _abrir_informes(page, cfg):
     return combo
 
 
+def _contexto_actual_informes(page, cfg):
+    """Obtiene el contexto visible del informe; nunca asume carpeta predeterminada.
+
+    En GWT puede existir un .label oculto y el texto tarda en actualizarse.
+    Solo se usa el panel visible y se registran los valores observados.
+    """
+    panel = page.locator('.sidebar.reportSidebar .reportContextPanel')
+    try:
+        panel.wait_for(state='visible', timeout=int(cfg.get('aris_timeout_seleccion_ms', 20000)))
+        page.wait_for_function(
+            """() => [...document.querySelectorAll('.sidebar.reportSidebar .reportContextPanel .label')]
+                .some(el => {
+                    const box = el.getBoundingClientRect();
+                    return box.width > 0 && box.height > 0 && !!el.textContent.trim();
+                })""",
+            timeout=int(cfg.get('aris_timeout_seleccion_ms', 20000))
+        )
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado('No se pudo leer el grupo real del panel Informes') from exc
+
+    nombres = [' '.join(x.inner_text().split()) for x in panel.locator('.label').all() if x.is_visible()]
+    nombres = [x for x in nombres if x]
+    LOG.info('ARIS: contexto real del panel Informes: %s', nombres)
+    if len(nombres) != 1:
+        raise ArisNoConfirmado(f'Contexto Informes ambiguo: {len(nombres)} etiquetas visibles')
+    actual = nombres[0]
+
+    # Comprobación estricta SOLO cuando el operador fija el grupo localmente.
+    # En preparar registramos la discrepancia, para poder avanzar al desplegable
+    # sin realizar ninguna importación; en ejecutar nunca ignoramos un desacuerdo.
+    esperado = ' '.join((cfg.get('aris_grupo_informes') or '').split())
+    if esperado and actual.casefold() != esperado.casefold():
+        if cfg.get('modo_aris') == 'ejecutar':
+            raise ArisNoConfirmado(
+                f'Carpeta incorrecta para importar: actual={actual!r}, configurada={esperado!r}'
+            )
+        LOG.warning('ARIS: carpeta esperada=%r, observada=%r; '
+                    'modo preparar: sin lanzar informe', esperado, actual)
+    return actual
+
+
 def seleccionar_informe(page, cfg):
     """Seleccionar por clic la opción real del desplegable, NO el historial."""
     report = cfg.get('aris_report_name', REPORT)
-    combo = _abrir_informes(page, cfg)
-    contexto = page.locator('.sidebar.reportSidebar .reportContextPanel .label')
-    carpeta = cfg.get('aris_grupo_informes', '03 PROYECTOS').strip()
-    if contexto.count() != 1 or contexto.inner_text().strip() != carpeta:
-        raise ArisNoConfirmado('La carpeta del panel Informes no coincide con aris_grupo_informes')
-    LOG.info('ARIS: carpeta de informes confirmada: %s', carpeta)
+    _abrir_informes(page, cfg)
+    carpeta = _contexto_actual_informes(page, cfg)
+    LOG.info('ARIS: grupo de informes identificado: %s', carpeta)
 
     # GWT: abrir la flecha; el historial inferior puede mostrar el MISMO
     # nombre, pero jamás debemos pulsar un informe ya ejecutado.
@@ -174,6 +212,7 @@ def seleccionar_informe(page, cfg):
     except PlaywrightTimeout as exc:
         raise ArisNoConfirmado('El informe no quedó seleccionado en el campo') from exc
     LOG.info('ARIS: informe exacto seleccionado por clic: %s', report)
+    return carpeta
 
 
 def _dialogo_con(page, selector):
@@ -303,13 +342,13 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
                 LOG.info('Inspección ARIS: sin lanzar informes ni subir XML')
                 input('Inspecciona ARIS; Enter para cerrar sin importar... ')
                 return {'estado': 'inspeccionado', 'importado': False}
-            seleccionar_informe(page, cfg)
+            grupo_aris = seleccionar_informe(page, cfg)
             if modo == 'preparar':
                 LOG.info('ARIS: preparación validada; no se lanzó ningún informe')
                 input('Informe seleccionado. Inspecciona la pantalla; Enter para cerrar SIN lanzar... ')
                 return {'estado': 'preparado_para_lanzar', 'importado': False}
             confirmacion = input(
-                f'IMPORTACIÓN REAL en ARIS. Archivo: {xml.name}. '
+                f'IMPORTACIÓN REAL en ARIS. Grupo: {grupo_aris}. Archivo: {xml.name}. '
                 'Escribe IMPORTAR para lanzar el informe: '
             )
             if confirmacion != 'IMPORTAR':

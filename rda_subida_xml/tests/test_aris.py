@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from modules.aris import clasificar_mensaje, validar_xml_aris, _arise_url, seleccionar_informe, _abrir_informes
+from modules.aris import clasificar_mensaje, validar_xml_aris, _arise_url, seleccionar_informe, _abrir_informes, _contexto_actual_informes, ArisNoConfirmado
 import workflow
 
 
@@ -107,18 +107,56 @@ class TestAris(unittest.TestCase):
         historia.evaluate.return_value = False
         opcion.evaluate.return_value = True
         pagina.get_by_text.return_value.all.return_value = [historia, opcion]
-        contexto = MagicMock()
-        contexto.count.return_value = 1
-        contexto.inner_text.return_value = '03 PROYECTOS'
         flecha = MagicMock()
         flecha.count.return_value = 1
         flecha.is_visible.return_value = True
-        pagina.locator.side_effect = lambda sel: contexto if 'reportContextPanel' in sel else flecha
-        with patch('modules.aris._abrir_informes', return_value=combo):
-            seleccionar_informe(pagina, {})
+        pagina.locator.return_value = flecha
+        with patch('modules.aris._abrir_informes', return_value=combo), \
+             patch('modules.aris._contexto_actual_informes', return_value='03 PROYECTOS'):
+            grupo = seleccionar_informe(pagina, {})
+        self.assertEqual(grupo, '03 PROYECTOS')
         opcion.click.assert_called_once_with()
         historia.click.assert_not_called()
         self.assertEqual(pagina.wait_for_function.call_count, 2)
+
+    def test_contexto_distinto_en_preparar_no_bloquea_seleccion(self):
+        pagina = MagicMock()
+        panel = MagicMock()
+        etiqueta = MagicMock()
+        etiqueta.is_visible.return_value = True
+        etiqueta.inner_text.return_value = 'P00 Importación XML'
+        panel.locator.return_value.all.return_value = [etiqueta]
+        pagina.locator.return_value = panel
+        cfg = {'modo_aris': 'preparar', 'aris_grupo_informes': '03 PROYECTOS'}
+        with self.assertLogs('modules.aris', level='WARNING') as logs:
+            actual = _contexto_actual_informes(pagina, cfg)
+        self.assertEqual(actual, 'P00 Importación XML')
+        self.assertIn('03 PROYECTOS', ''.join(logs.output))
+        self.assertIn('P00 Importación XML', ''.join(logs.output))
+
+    def test_contexto_distinto_en_ejecutar_bloquea_importacion(self):
+        pagina = MagicMock()
+        panel = MagicMock()
+        etiqueta = MagicMock()
+        etiqueta.is_visible.return_value = True
+        etiqueta.inner_text.return_value = 'P00 Importación XML'
+        panel.locator.return_value.all.return_value = [etiqueta]
+        pagina.locator.return_value = panel
+        cfg = {'modo_aris': 'ejecutar', 'aris_grupo_informes': '03 PROYECTOS'}
+        with self.assertRaisesRegex(ArisNoConfirmado, 'Carpeta incorrecta'):
+            _contexto_actual_informes(pagina, cfg)
+
+    def test_contexto_sin_configuracion_usa_grupo_observado(self):
+        pagina = MagicMock()
+        panel = MagicMock()
+        etiqueta = MagicMock()
+        etiqueta.is_visible.return_value = True
+        etiqueta.inner_text.return_value = '  03   PROYECTOS  '
+        panel.locator.return_value.all.return_value = [etiqueta]
+        pagina.locator.return_value = panel
+        self.assertEqual(_contexto_actual_informes(pagina, {
+            'modo_aris': 'preparar'
+        }), '03 PROYECTOS')
 
     def test_pestana_activa_no_se_clickea_otra_vez(self):
         pagina = MagicMock()

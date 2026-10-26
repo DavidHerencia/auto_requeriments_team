@@ -333,3 +333,30 @@ Cuando funcione el paso de selección, cambiar a
 \`IMPORTAR\` por consola. Si ARIS cambia el DOM del menú desplegado,
 inspeccionar el popup abierto; no inferir el selector de las entradas
 históricas.
+
+
+### Corrección del 26-10: contexto real del panel Informes
+
+El registro S000000000799 llegó a abrir el panel Informes pero se
+detuvo antes de abrir el desplegable: la validación exigía por defecto
+\`03 PROYECTOS\`, mientras la página devolvía otro número de elementos
+o un texto diferente. Esa comprobación no decía cuál era el valor real.
+
+El robot ahora espera un **contexto visible** dentro de
+\`.sidebar.reportSidebar .reportContextPanel\`, registra el texto
+observado, tolera espacios repetidos y utiliza el grupo observado
+en la confirmación de ejecución.
+
+\`aris_grupo_informes\` es **opcional**, sin valor por defecto.
+Si se define en \`config.local.json\`, la comparación es estricta en
+\`modo_aris="ejecutar"\`, pero **no bloquea \`preparar\`**: en ese
+modo solo emite una advertencia y sigue con la selección, sin lanzar.
+Después de comprobar la carpeta correcta, configurar el grupo real
+en el archivo local si se desea la verificación estricta.
+
+El log esperado para la prueba sin efectos incluye:
+\`ARIS: contexto real del panel Informes: [...] \`,
+\`ARIS: desplegable Informes abierto\` y
+\`ARIS: informe exacto seleccionado por clic: BBVA - Importar BPMN\`.
+Si el desplegable cambia de estructura y falla, detenerse y compartir
+solo la sección del DOM del menú abierto; no subir secretos al repo.
