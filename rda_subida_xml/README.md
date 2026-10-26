@@ -16,7 +16,7 @@ El script mantiene **un mismo Chrome/Playwright** abierto durante los registros 
 ## Flujo por registro
 
 - Adjunta el XML a HERO utilizando el input inspeccionado: `input[type="file"][aria-label="Adjuntar archivos"]`.
-- Escribe el prompt de corrección con **BPMN ARIS XML Repair** y hace clic en el botón de Enviar (selector anterior del prototipo: `[data-testid="send-button"]`, sujeto a verificación).
+- Escribe el prompt de corrección con **BPMN ARIS XML Repair** y lo envía mediante `editor.press('Enter')`, validado en el prototipo. Nunca envía automáticamente dos veces ante incertidumbre.
 - Espera un turno nuevo de asistente y una señal de finalización con texto estable. No usa un máximo de espera fijo cuando termina antes.
 - Busca descarga XML en el turno actual o contenido XML de un bloque de código. Si no hay XML válido, hace una sola petición de recuperación. Si hay timeout o error de carga, marca `requiere_revision` sin reenvío automático.
 - Corrige únicamente el atributo `name` del elemento `id="LanePrincipal"` con `id_n5 nombre_proceso` (texto original), y valida el XML.
@@ -98,3 +98,36 @@ modifica `LanePrincipal` y se guarda el archivo terminado.
 **No borrar el checkpoint existente.** Los registros marcados
 `requiere_revision` por el antiguo detector pudieron responder correctamente
 en ChatGPT. Revisarlos o recuperarlos sin volver a enviar el mismo XML a ciegas.
+
+## Diagnóstico del bloqueo de octubre 26
+
+La inspección real del DOM de HERO reveló que el turno nuevo utiliza
+`data-chatgpt-turn-key="...:assistant"` y no solo el antiguo
+`data-turn-key="...:assistant"`. Por eso los logs repetían
+`respuesta_nueva=False` aunque el XML estuviera visible. Ahora se
+prioriza el atributo real y se conserva compatibilidad con el anterior
+y `data-conversation-role="assistant"`; el valor antiguo que pueda
+seguir en `config.local.json` se reconoce sin exigir modificar secretos.
+
+La finalización sigue basada en la marca `complete` del turno o en
+la transición observada de controles de generación. No se captura
+una respuesta simplemente por haber transcurrido unos segundos.
+Si encuentra el turno pero NO encuentra evidencia de finalización,
+deja `requiere_revision` sin reenviar. En ese caso inspeccionaremos
+juntos la señal real de finalización de la interfaz.
+
+Los warnings HTTP 403 repetidos provenían de registrar **cada**
+respuesta `fetch` rechazada. Ahora se agrupan en un resumen por
+código de estado y tipo de solicitud, junto con los `ERR_ABORTED`.
+No se guardan endpoints ni URLs sensibles. Estos códigos, por sí solos,
+no permiten atribuir una causa; la evidencia mostró que HERO generaba
+respuesta pese a ellos.
+
+Con Ctrl+C una sola vez durante un registro, la aplicación marca
+`requiere_revision`, guarda el checkpoint y detiene el lote antes
+de cerrar Chrome. Evitar un segundo Ctrl+C durante la limpieza.
+
+**Probar únicamente un pendiente** (`--limite 1`) antes de procesar
+lotes. Los registros que ya tienen respuesta en HERO pero figuran como
+`requiere_revision` no se reenvían automáticamente. Hay que revisar
+o recuperar su resultado existente antes de volver a enviarlos.

@@ -9,6 +9,7 @@ import os
 import re
 import time
 import uuid
+from collections import Counter
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -28,7 +29,9 @@ RECUPERAR = ('Dame solamente el xml listo para descargar sin nada mas o en caso 
 ARCHIVO = 'input[type="file"][aria-label="Adjuntar archivos"]'
 EDITOR = 'div[contenteditable="true"][aria-label="Pregunta a ChatGPT"]'
 ENVIAR = '[data-testid="send-button"]'
-TURNO = '[data-turn-key$=":assistant"]'
+TURNO = '[data-chatgpt-turn-key$=":assistant"]'
+TURNO_LEGACY = '[data-turn-key$=":assistant"]'
+TURNO_ROLE = '[data-conversation-role="assistant"]'
 RESERVADOS = {'CON', 'PRN', 'AUX', 'NUL'} | {
     f'{p}{n}' for p in ('COM', 'LPT') for n in range(1, 10)
 }
@@ -160,11 +163,43 @@ def _esperar_adjunto(page, xml_path, config):
     raise ResultadoIncierto('El adjunto no termino su carga visible')
 
 
+def _respuestas_asistente(page, config):
+    """Prioriza el DOM de HERO observado: data-chatgpt-turn-key.
+
+    El selector anterior data-turn-key ya no aparece en la captura real.
+    Si config.local.json aun lleva ese valor antiguo, lo migramos en tiempo
+    de ejecucion sin obligar a editar el archivo privado.
+    """
+    custom = config.get('gpt_respuesta_selector', '')
+    if custom and custom not in (TURNO_LEGACY, TURNO):
+        return page.locator(custom)
+    actual = page.locator(TURNO)
+    if actual.count():
+        return actual
+    legado = page.locator(TURNO_LEGACY)
+    if legado.count():
+        return legado
+    por_rol = page.locator(TURNO_ROLE)
+    if por_rol.count():
+        return por_rol
+    return actual
+
+
 def _marcadores_generacion(page, turno):
     """Observa estado del TURNO ACTUAL y controles activos, sin leer contenido."""
     estado = turno.evaluate(
-        """el => el.closest('[data-turn-state]')?.getAttribute('data-turn-state')
-                   || el.getAttribute('data-turn-state') || ''"""
+        """el => {
+            const atributos = ['data-turn-state', 'data-chatgpt-turn-state'];
+            for (const nombre of atributos) {
+                const propio = el.getAttribute(nombre);
+                if (propio) return propio;
+                const padre = el.closest('[' + nombre + ']');
+                if (padre) return padre.getAttribute(nombre);
+                const hijo = el.querySelector('[' + nombre + ']');
+                if (hijo) return hijo.getAttribute(nombre);
+            }
+            return '';
+        }"""
     )
     stop = page.locator('[data-testid="stop-button"]:visible').count() > 0
     if not stop:
@@ -187,7 +222,6 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
     El conteo de turnos de usuario NO es condicion necesaria: la version
     actual de HERO puede mostrar el mensaje sin data-turn-key='...:user'.
     """
-    sel = _selector(config, 'gpt_respuesta_selector', TURNO)
     limite = time.monotonic() + int(config.get('timeout_respuesta_ms', 480000)) / 1000
     visto_respuesta = False
     generacion_vista = False
@@ -195,17 +229,21 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
     firma_anterior = None
     lecturas_finales_iguales = 0
     ultimo_log = 0
+    sin_selector_reportado = False
 
     while time.monotonic() < limite:
-        respuestas = page.locator(sel)
+        respuestas = _respuestas_asistente(page, config)
         cantidad = respuestas.count()
+        if not cantidad and not sin_selector_reportado:
+            LOG.warning('Aun no hay turno visible; buscando data-chatgpt-turn-key y selectores antiguos')
+            sin_selector_reportado = True
         if cantidad > anteriores + 1:
             raise ResultadoIncierto('Multiples respuestas nuevas: captura ambigua')
 
         if cantidad == anteriores + 1:
             turno = respuestas.nth(anteriores)
             if not visto_respuesta:
-                LOG.info('Turno NUEVO de asistente detectado: mensaje enviado')
+                LOG.info('Turno NUEVO de asistente detectado; selector=%s', TURNO if page.locator(TURNO).count() else ('legacy' if page.locator(TURNO_LEGACY).count() else 'role'))
                 visto_respuesta = True
             try:
                 completo, generando, enviar_listo = _marcadores_generacion(page, turno)
@@ -247,7 +285,7 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
                 LOG.debug('Turno en renderizado: tipo=%s', type(exc).__name__)
 
         if time.monotonic() - ultimo_log >= 10:
-            usuarios = page.locator('[data-turn-key$=":user"]').count()
+            usuarios = page.locator('[data-chatgpt-turn-key$=":user"], [data-turn-key$=":user"]').count()
             LOG.info(
                 'Esperando fin de generacion: respuesta_nueva=%s user_turns=%s/%s generacion_vista=%s',
                 visto_respuesta, usuarios, usuarios_antes, generacion_vista
@@ -259,14 +297,15 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
 
 
 def instalar_diagnostico(page):
-    """Registra solo status HTTP y codigos de red, nunca URLs ni archivos."""
+    """Cuenta fallos de red; no imprime cada request ni URLs sensibles."""
+    conteos = Counter()
+
     def fallo(respuesta):
         try:
             host = urlsplit(respuesta.url).hostname or ''
             tipo = respuesta.request.resource_type
             if host.endswith(('chatgpt.com', 'openai.com')) and tipo in ('fetch', 'xhr', 'document') and respuesta.status >= 400:
-                LOG.warning('ChatGPT HTTP no satisfactorio: status=%s recurso=%s host=%s',
-                            respuesta.status, tipo, host)
+                conteos[f'HTTP {respuesta.status} ({tipo})'] += 1
         except Exception:
             pass
 
@@ -276,13 +315,22 @@ def instalar_diagnostico(page):
             if host.endswith(('chatgpt.com', 'openai.com')):
                 motivo = str(solicitud.failure or '')
                 codigo = re.search(r'net::[A-Z_0-9]+', motivo)
-                LOG.warning('Solicitud fallida: host=%s causa=%s',
-                            host, codigo.group(0) if codigo else 'desconocida')
+                conteos[f'RED {codigo.group(0) if codigo else "desconocida"}'] += 1
         except Exception:
             pass
 
     page.on('response', fallo)
     page.on('requestfailed', error_red)
+
+    def resumen():
+        if conteos:
+            detalle = ', '.join(f'{clave}={cantidad}' for clave, cantidad in sorted(conteos.items()))
+            LOG.warning('Resumen de solicitudes rechazadas/abortadas: %s', detalle)
+            LOG.info('Los codigos HTTP no identifican por si solos la causa o el endpoint')
+        else:
+            LOG.info('Sin errores HTTP/red observados en este periodo')
+
+    return resumen
 
 
 def registrar_flags_chrome(contexto):
@@ -301,9 +349,8 @@ def registrar_flags_chrome(contexto):
 def _enviar(page, config, prompt, archivo=None):
     """Un solo Enter como en el prototipo; respuesta nueva confirma el envio."""
     editor = _esperar_editor(page, config)
-    resp = _selector(config, 'gpt_respuesta_selector', TURNO)
-    anteriores = page.locator(resp).count()
-    usuarios = page.locator('[data-turn-key$=":user"]').count()
+    anteriores = _respuestas_asistente(page, config).count()
+    usuarios = page.locator('[data-chatgpt-turn-key$=":user"], [data-turn-key$=":user"]').count()
     if archivo:
         _esperar_adjunto(page, archivo, config)
     editor.fill(prompt)
@@ -406,7 +453,8 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
         try:
             registrar_flags_chrome(ctx)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            instalar_diagnostico(page)
+            resumir_red = instalar_diagnostico(page)
+            interrumpido = False
             for n, (indice, registro) in enumerate(elegidos, 1):
                 base_archivo = nombre_seguro(registro['id_n5'], registro['nombre_proceso'])
                 final = base / 'corregidos' / (base_archivo + '.xml')
@@ -440,6 +488,13 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                 except SalidaSinXml as e:
                     registro.update(estado='correccion_fallida', motivo=str(e))
                     LOG.warning('Registro %s: segundo intento sin XML valido', n)
+                except KeyboardInterrupt:
+                    interrumpido = True
+                    registro.update(
+                        estado='requiere_revision',
+                        motivo='Interrumpido manualmente; revisar chat antes de cualquier reenvio'
+                    )
+                    LOG.warning('Ctrl+C recibido: se conserva checkpoint y se detiene el lote')
                 except Exception as e:
                     registro.update(estado='requiere_revision', motivo=type(e).__name__)
                     LOG.error('Registro %s requiere revision, fase=%s (sin reenviar): %s', n,
@@ -447,8 +502,11 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                 finally:
                     temporal.unlink(missing_ok=True)
                     escribir_json(ruta, trabajos)
+                if interrumpido:
+                    break
             LOG.info('Checkpoint guardado: %s', ruta)
-            if config.get('mantener_chrome_abierto', True):
+            resumir_red()
+            if not interrumpido and config.get('mantener_chrome_abierto', True):
                 input('Chrome queda abierto para revisar. Pulsa Enter cuando quieras cerrarlo...')
         finally:
             ctx.close()
