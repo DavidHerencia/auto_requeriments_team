@@ -46,7 +46,8 @@ def descargar_xmls(cfg: dict, ruta: Path, perfil: Path):
         raise ValueError('Configura apps_script_url en config.local.json')
     perfil.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
-        navegador = p.chromium.launch_persistent_context(str(perfil), channel='chrome', headless=False)
+        navegador = p.chromium.launch_persistent_context(str(perfil), channel='chrome', headless=False,
+            chromium_sandbox=True)
         try:
             pagina = navegador.pages[0] if navegador.pages else navegador.new_page()
             pagina.goto(url, wait_until='domcontentloaded')

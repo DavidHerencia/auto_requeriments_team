@@ -377,12 +377,29 @@ def _esperar_transicion_final_archivo(page, cfg):
     return estado
 
 
-def _opcion_auto(page, cfg):
-    """Aceptar SOLO SCRIPT_DIALOG con importación automática.
+def _normalizar_tipo_importacion(valor):
+    """Ignorar solo tildes, mayúsculas y espacios; NO aceptar otro modo."""
+    import unicodedata
+    limpio = ''.join(
+        c for c in unicodedata.normalize('NFKD', str(valor or ''))
+        if not unicodedata.combining(c)
+    )
+    return ' '.join(limpio.casefold().split())
 
-    GWT modifica la propiedad input.value sin atributo value en el HTML.
+
+def _opcion_auto(page, cfg):
+    """Confirmar el modo automático en el modal SCRIPT_DIALOG de ARIS.
+
+    El combo GWT muestra 'Importación automatica' sin tilde, aunque el
+    texto explicativo y nuestra configuración tienen 'automática'.
+    Se comprueba la equivalencia normalizada antes de hacer clic.
     """
     timeout = int(cfg.get('aris_timeout_paso_ms', 45000))
+    expected = cfg.get('aris_tipo_importacion', 'Importación automática')
+    if _normalizar_tipo_importacion(expected) != 'importacion automatica':
+        raise ArisNoConfirmado(
+            f'Configuración no autorizada para importación automática: {expected!r}'
+        )
     modal = page.locator(
         'div[role="dialog"][aria-hidden="false"][data-testid="SCRIPT_DIALOG"]'
     ).filter(has=page.get_by_text('Opciones de importación', exact=True))
@@ -391,39 +408,48 @@ def _opcion_auto(page, cfg):
     except PlaywrightTimeout as exc:
         raise ArisNoConfirmado('No apareció el modal Opciones de importación') from exc
     modal = _una_visible(modal, 'Modal de opciones de importación')
-    expected = cfg.get('aris_tipo_importacion', 'Importación automática')
     combo = modal.locator('[data-testid="DROP_OPCIONES"] input[role="combobox"]')
     if combo.count() != 1:
         raise ArisNoConfirmado('No se encontró el combobox de tipo de importación')
+    combo.wait_for(state='visible', timeout=timeout)
     try:
-        combo.wait_for(state='visible', timeout=timeout)
         page.wait_for_function(
-            """valor => {
+            r"""valor => {
+                const normal = t => String(t || '')
+                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                    .replace(/\s+/g, ' ').trim().toLocaleLowerCase('es');
                 const d = document.querySelector(
                     'div[role="dialog"][aria-hidden="false"][data-testid="SCRIPT_DIALOG"]'
                 );
                 const x = d && d.querySelector(
                     '[data-testid="DROP_OPCIONES"] input[role="combobox"]'
                 );
-                return !!x && x.value.trim() === valor;
+                return !!x && normal(x.value) === normal(valor);
             }""",
             arg=expected,
             timeout=timeout
         )
     except PlaywrightTimeout as exc:
-        LOG.warning('ARIS: tipo no confirmado; valor observado=%r',
-                    combo.input_value() if combo.is_visible() else '(oculto)')
+        LOG.warning('ARIS: modo de importación incorrecto o no cargado: actual=%r, esperado=%r',
+                    combo.input_value() if combo.is_visible() else '(oculto)', expected)
         raise ArisNoConfirmado(
-            'El tipo de importación no es exactamente el autorizado; sin confirmar'
+            'El tipo de importación no coincide con Importación automática; sin confirmar'
         ) from exc
-    LOG.info('ARIS: tipo de importación confirmado: %s', expected)
+
+    observado = combo.input_value()
+    if _normalizar_tipo_importacion(observado) != _normalizar_tipo_importacion(expected):
+        raise ArisNoConfirmado(
+            f'El modo de importación cambió antes del clic: observado={observado!r}'
+        )
+    LOG.info('ARIS: modo de importación validado: UI=%r (equivale a %r)',
+             observado, expected)
     aceptar = modal.locator('.modal-footer a[aria-label="Aceptar"]')
     if aceptar.count() != 1 or not aceptar.is_visible() or not aceptar.is_enabled() or (
         aceptar.get_attribute('aria-disabled') == 'true'
     ):
         raise ArisNoConfirmado('Aceptar opciones: botón no visible o deshabilitado')
     aceptar.click()
-    LOG.info('ARIS: Opciones de importación aceptadas por clic')
+    LOG.info('ARIS: Opciones de importación aceptadas por clic; esperando resultado')
 
 
 def clasificar_mensaje(texto):
@@ -482,7 +508,8 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
     perfil.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
-            str(perfil), channel='chrome', headless=False, accept_downloads=True
+            str(perfil), channel='chrome', headless=False, accept_downloads=True,
+            chromium_sandbox=True
         )
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()

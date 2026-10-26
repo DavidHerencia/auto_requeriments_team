@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 from modules.aris import clasificar_mensaje, validar_xml_aris, _arise_url, seleccionar_informe, _abrir_informes, _contexto_actual_informes, ArisNoConfirmado, adjuntar_xml
 import workflow
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
-from modules.aris import _opcion_auto
+from modules.aris import _opcion_auto, _normalizar_tipo_importacion
 
 
 class TestAris(unittest.TestCase):
@@ -168,6 +168,7 @@ class TestAris(unittest.TestCase):
         unico.return_value = modal_lista
         combo = MagicMock()
         combo.count.return_value = 1
+        combo.input_value.return_value = 'Importación automatica'
         aceptar = MagicMock()
         aceptar.count.return_value = 1
         aceptar.is_visible.return_value = True
@@ -179,6 +180,36 @@ class TestAris(unittest.TestCase):
         self.assertEqual(pagina.wait_for_function.call_args.kwargs['arg'],
                          'Importación automática')
         aceptar.click.assert_called_once_with()
+
+    def test_normalizacion_tipo_importacion_aris(self):
+        self.assertEqual(
+            _normalizar_tipo_importacion('Importación automática'),
+            _normalizar_tipo_importacion('Importación automatica')
+        )
+        self.assertEqual(
+            _normalizar_tipo_importacion(' IMPORTACION   AUTOMATICA '),
+            'importacion automatica'
+        )
+        self.assertNotEqual(
+            _normalizar_tipo_importacion('Importación manual'),
+            _normalizar_tipo_importacion('Importación automática')
+        )
+
+    @patch('modules.aris._una_visible')
+    def test_modal_opciones_rechaza_manual_sin_click(self, unico):
+        pagina = MagicMock()
+        modal = MagicMock()
+        unico.return_value = modal
+        combo = MagicMock()
+        combo.count.return_value = 1
+        combo.input_value.return_value = 'Importación manual'
+        aceptar = MagicMock()
+        modal.locator.side_effect = lambda sel: (
+            combo if 'DROP_OPCIONES' in sel else aceptar
+        )
+        with self.assertRaisesRegex(ArisNoConfirmado, 'cambió antes del clic'):
+            _opcion_auto(pagina, {'aris_tipo_importacion': 'Importación automática'})
+        aceptar.click.assert_not_called()
 
     @patch('modules.aris._esperar_transicion_archivo', return_value='opciones')
     @patch('modules.aris._aceptar')

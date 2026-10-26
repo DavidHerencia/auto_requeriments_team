@@ -414,3 +414,19 @@ registro \`pendiente\`. No borrar ni editar a ciegas checkpoints.
 * Los estados `requiere_revision` e `informe_completo` nunca se
   reintentan implícitamente. La finalización del informe no sustituye
   verificar la existencia del modelo en el repositorio.
+
+### ARIS: selector de importación sin tilde (26-10-2026)
+
+El log del 26/10 mostró `valor observado='Importación automatica'` (sin
+segunda tilde). El RDA comparaba el valor literalmente contra
+`Importación automática` y agotaba 45s pese a que el modal correcto
+estaba listo. Ahora se comparan ambos valores normalizando solamente
+acentos, mayúsculas y espacios; `Importación manual` **no** es válido.
+Después se valida de nuevo y se hace exactamente un clic en
+`[data-testid="SCRIPT_DIALOG"] .modal-footer a[aria-label="Aceptar"]`.
+La fase sigue esperando el resultado final de ARIS, no supone éxito.
+
+Los lanzamientos de Chrome en ARIS y descarga de XML usan
+`chromium_sandbox=True`, como ChatGPT, para evitar el aviso de Chrome
+por `--no-sandbox`. Esa advertencia era independiente del fallo por
+acentos. No se registran ni incorporan secretos al repositorio.
