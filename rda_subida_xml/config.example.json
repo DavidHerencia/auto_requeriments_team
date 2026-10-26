@@ -1,0 +1,11 @@
+{
+  "aris_url": "",
+  "headless": false,
+  "timeout_ms": 30000,
+  "max_reintentos": 1,
+  "modo_aris": "inspeccionar",
+  "selector_archivo": "",
+  "selector_importar": "",
+  "selector_confirmacion": "",
+  "selector_error": ""
+}
