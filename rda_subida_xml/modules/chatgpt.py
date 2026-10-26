@@ -261,20 +261,42 @@ def registrar_flags_chrome(contexto):
 
 
 def _enviar(page, config, prompt, archivo=None):
+    """Enviar una sola vez con Enter (flujo validado en el prototipo).
+
+    Confirmar por incremento de turnos de usuario; no confundir editor vacio
+    con un mensaje enviado. Ante incertidumbre, no volver a pulsar Enter.
+    """
     editor = _esperar_editor(page, config)
     resp = _selector(config, 'gpt_respuesta_selector', TURNO)
     anteriores = page.locator(resp).count()
     usuarios = page.locator('[data-turn-key$=":user"]').count()
+
     if archivo:
         _esperar_adjunto(page, archivo, config)
     editor.fill(prompt)
-    boton = page.locator(_selector(config, 'gpt_enviar_selector', ENVIAR))
-    boton.wait_for(state='visible', timeout=20000)
-    if boton.count() != 1:
-        raise ResultadoIncierto('Boton Enviar ambiguo')
-    boton.wait_for(state='visible')
-    boton.click(timeout=20000)
-    LOG.info('Clic Enviar realizado; adjunto=%s', bool(archivo))
+    LOG.info('Prompt escrito; caracteres=%s adjunto=%s', len(prompt), bool(archivo))
+
+    # Antes se esperaba el selector send-button y se agotaba su timeout.
+    # El prototipo probado enviaba pulsando Enter sobre el editor.
+    try:
+        editor.press('Enter', timeout=20000)
+    except Exception as exc:
+        LOG.error('Fallo pulsacion Enter: tipo=%s; envio incierto', type(exc).__name__)
+        raise ResultadoIncierto('Error al pulsar Enter; no reenviar automaticamente') from exc
+    LOG.info('Enter pulsado una sola vez; esperando confirmacion de envio')
+
+    try:
+        page.wait_for_function(
+            """(previo) => document.querySelectorAll('[data-turn-key$=":user"]').length > previo""",
+            arg=usuarios,
+            timeout=int(config.get('timeout_envio_ms', 30000))
+        )
+    except PlaywrightTimeout as exc:
+        # Puede ser fallo de red o DOM cambiado, nunca emitir otro Enter.
+        LOG.warning('Nuevo turno de usuario no observado; envio incierto, no reenvio')
+        raise ResultadoIncierto('Envio no confirmado tras Enter; requiere revision') from exc
+
+    LOG.info('Nuevo turno de usuario detectado: envio confirmado en DOM')
     return _nuevo_turno(page, config, anteriores, usuarios)
 
 

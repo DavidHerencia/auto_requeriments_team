@@ -18,5 +18,6 @@
   "selector_confirmacion": "",
   "selector_error": "",
   "mantener_chrome_abierto": true,
-  "timeout_respuesta_ms": 480000
+  "timeout_respuesta_ms": 480000,
+  "timeout_envio_ms": 30000
 }

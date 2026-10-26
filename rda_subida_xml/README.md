@@ -57,3 +57,20 @@ Prueba local: `python -m unittest discover -s tests -v`. Luego ejecutar
 con `modo_chatgpt=ejecutar` y un registro autorizado. Para dos, `--limite 2`.
 Un checkpoint existente con estado `requiere_revision` o `envio_iniciado`
 no se reenvía automáticamente; revisar ese caso antes de repetirlo.
+
+## Envío ChatGPT: método probado
+
+El flujo de prueba anterior escribió el prompt y utilizó `editor.press("Enter")`.
+Se usa ese método nuevamente en lugar de esperar un selector visible de botón Enviar,
+que provocaba un timeout de 20 segundos sin enviar. Ahora se observa en el DOM un
+**nuevo turno de usuario** como confirmación: nunca se repite Enter si la confirmación
+falla. La espera de 30 segundos es solo un límite de seguridad, no una pausa fija.
+Después se observa el turno nuevo de asistente y su estabilidad.
+
+Probar con `--limite 1` y verificar logs `Prompt escrito`, `Enter pulsado`,
+`Nuevo turno de usuario detectado` y `Respuesta estable`.
+Los estados `requiere_revision` previos se conservan para prevenir duplicados;
+el siguiente ensayo seleccionará otro registro pendiente. Antes de reenviar cualquiera
+de ellos hay que comprobar manualmente la conversación correspondiente.
+Los 403 observados son independientes del error del botón: pueden indicar
+un rechazo de alguna solicitud del servicio, sin que sepamos cuál sin más evidencia.
