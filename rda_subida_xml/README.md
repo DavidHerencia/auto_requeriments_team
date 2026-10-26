@@ -1,30 +1,20 @@
-# RDA XML: extracción y corrección
+# RDA XML — corrección con HERO
 
-## Hoja
-Crea una pestaña llamada **EXPORT_RDA** con las cuatro columnas exactas:
-`id_solicitud`, `id_n5`, `nombre_proceso`, `xml`. Identificadores como texto.
+La fase download validada exporta un JSON con cuatro campos: `id_solicitud`, `id_n5`, `nombre_proceso`, `xml`. Sin cambios de Apps Script.
 
-## Apps Script
-En el Sheet: Extensiones > Apps Script. Copia `apps_script/Code.gs` y agrega archivo HTML llamado **Bridge** con `apps_script/Bridge.html`. Despliega aplicación web ejecutada como **usuario que accede**, solo usuarios autorizados. Copia URL `/exec` en `config.local.json` como `apps_script_url`. El puente solo lee.
+## Primer paso: inspección de ChatGPT
 
-## Instalar
-```powershell
-cd rda_subida_xml
-py -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python -m playwright install chrome
-copy config.example.json config.local.json
-.venv\Scripts\python app.py --fase download
-```
+Ejecutar `python app.py --fase chatgpt --archivo data/exportaciones/registros_XXX.json` con `modo_chatgpt` igual a `inspeccionar`. Abrirá Chrome **sin enviar archivos**. Seleccionar manualmente el GPT **HERO - BPMN Modeling**, comprobar la habilidad **BPMN ARIS XML Repair** y localizar DOM real de los siguientes controles: URL directa del GPT, `input[type=file]`, editor, botón Enviar, contenedor de **nueva** respuesta del asistente, señal de turno completo dentro de ese contenedor y enlace/botón de descarga del archivo. No enviar datos ni cookies al repositorio.
 
-Al autenticar Chrome y presionar Enter, se genera `data/exportaciones/registros_*.json` con `version` y `registros`, cada registro tiene exactamente cuatro campos.
+## Modo ejecutar (requiere inspección real previa)
 
-## Corrección / inspección
-```powershell
-.venv\Scripts\python app.py --fase chatgpt --archivo data\exportaciones\registros_XXX.json
-```
-Inicialmente `modo_chatgpt=inspeccionar`: se abre ChatGPT sin enviar nada. **Solo 1 registro** en esta fase. Para automatizar: inspeccionar juntos selector de adjuntar, editor, enviar, nueva respuesta y señal de turno completado. Configurar selectores reales y `modo_chatgpt=ejecutar`. Se adjunta XML y se escribe `@skill_revisor_y_corregidor_xml`, cuya activación efectiva debe comprobarse manualmente. No asumimos que el texto equivale a seleccionar la skill.
+Configurar `hero_gpt_url`, `modo_chatgpt: ejecutar` y selectores `gpt_*` en `config.local.json`. Se usa siempre el prompt:
+«Corrige el xml usando y siguiendo las instrucciones de "BPMN ARIS XML Repair". Dame solamente el xml listo para descargar sin nada mas o en caso de no poder solo ponmelo para copiar y pegar.»
 
-Si se confirma respuesta XML única y válida, se guarda en `data/corregidos/<id_n5 nombre_proceso>.xml`, reemplazando caracteres inválidos de Windows por `-`, y se crea JSON derivado con `id_archivo_n5`, `estado=correccion_finalizada` y ruta del XML. No altera JSON original. No reintentar envío si el estado del mensaje es incierto.
+Por cada registro, adjunta XML y espera respuesta nueva finalizada. Prefiere archivo descargable `.xml`, o XML pegado en bloque de texto. Si no hay XML válido, pide **una sola vez** «Dame solamente el xml listo para descargar sin nada mas o en caso de no poder solo ponmelo para copiar y pegar.» Si tampoco sale válido, marca `correccion_fallida`. Si hay timeout u otra incertidumbre marca `requiere_revision`, nunca reenvía a ciegas.
 
-**No versionar datos**, perfiles, XML reales, credenciales. Probar un registro autorizado primero; Apps Script tiene cuotas/límites y los 100 se evaluarán después. ARIS y subida de resultados quedan pendientes.
+El archivo final se guarda en `data/corregidos/id_n5 nombre_proceso - Detalle.xml`, reemplazando caracteres inválidos Windows por guiones. El `name` de `id="LanePrincipal"` se actualiza exactamente con `id_n5 nombre_proceso` sin sanear el texto del proceso. Se valida estructura XML y presencia única del lane. Si falla, no se marca éxito.
+
+El resultado JSON local es `data/exportaciones/procesados_REGISTROS.json`: contiene el registro inicial más `id_archivo_n5` (nombre sin extensión), `xml_corregido_ruta` y `estado=correccion_finalizada`. Se genera checkpoint después de cada registro y los completados se omiten al reanudar. El XML original del JSON no se sobrescribe.
+
+Logs en `data/logs`; no incluyen contenido XML ni prompts. `data/` queda ignorado por Git. No se ha validado la automatización con el DOM de ChatGPT: necesitamos inspeccionarlo antes de habilitar ejecución. ARIS sigue pendiente.
