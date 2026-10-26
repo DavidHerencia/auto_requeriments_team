@@ -11,6 +11,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--fase', choices=['download','chatgpt','aris'], required=True)
     parser.add_argument('--archivo', type=Path)
+    parser.add_argument('--limite', type=int, choices=[1, 2], default=1,
+                        help='Prueba de correccion: 1 o 2 registros pendientes')
     args = parser.parse_args()
     cfg = cargar_config()
     logs = DATA / 'logs'
@@ -25,7 +27,9 @@ def main():
     elif args.fase == 'chatgpt':
         if not args.archivo:
             parser.error('--archivo obligatorio')
-        procesar_registros(args.archivo, cfg, DATA)
+        if cfg.get('modo_chatgpt') != 'ejecutar':
+            parser.error('Para enviar XML cambia modo_chatgpt a ejecutar en config.local.json')
+        procesar_registros(args.archivo, cfg, DATA, limite=args.limite)
     else:
         if not args.archivo:
             parser.error('--archivo obligatorio')
