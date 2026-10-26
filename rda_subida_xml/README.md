@@ -149,3 +149,32 @@ Si el robot no ve el botón Detener ni el atributo `complete`, guardará
 `requiere_revision` sin reenviar a ciegas. En esa situación necesitamos
 inspeccionar el HTML del botón mientras está generando para confirmar
 el selector exacto. Los controles del DOM de ChatGPT no son API estable.
+
+## DOM validado con dos capturas locales (26-10-2026)
+
+Se analizaron dos exportaciones HTML completas de conversaciones de HERO
+**sin almacenarlas en Git**. Resultado observado:
+
+- Los mensajes reales usan `[data-chatgpt-search-unit-key$=":assistant"]`.
+  `[data-conversation-role="assistant"]` identifica solo el encabezado
+  accesible oculto «ChatGPT dijo:», NO el cuerpo.
+- El cuerpo usa `[data-markdown-text-style="assistant-message"]`.
+  Para XML en texto, `pre code` contiene los fragmentos `span` de
+  coloreado: Playwright `all_text_contents()` reconstruye el texto completo.
+  Se eliminan espacios externos y se verifica que el resultado sea XML.
+- La opción de archivo no es `<a download>`: es
+  `button[aria-label="Descargar archivo"]`, dentro del mensaje pero
+  **fuera** de la raíz Markdown. Se hace clic y se espera un evento real
+  `download`, luego se valida el contenido del archivo.
+- El turno tiene un ancestro `[data-talvt-turn-state="complete"]`.
+  Esa señal explícita tiene preferencia sobre inferir finalización por tiempo.
+- Si hay XML correcto en la primera respuesta, NO se envía el prompt de
+  recuperación. No se descargan ni copian XML de turnos anteriores.
+- Los XML del ejemplo del bloque de código son bien formados, pero **NO
+  contienen `id="LanePrincipal"`**. El RDA seguirá rechazándolos en
+  la etapa posterior, en vez de marcar falsamente `correccion_finalizada`.
+  La estructura BPMN esperada deberá revisarse antes de escalar a los 100.
+
+Los fixtures de las pruebas son **sintéticos**: ningún XML o HTML de usuario
+se incorpora al repositorio. Las pruebas de Playwright contra una respuesta
+real requieren la siguiente ejecución en el Chrome autorizado.

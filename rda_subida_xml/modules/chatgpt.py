@@ -29,8 +29,10 @@ RECUPERAR = ('Dame solamente el xml listo para descargar sin nada mas o en caso 
 ARCHIVO = 'input[type="file"][aria-label="Adjuntar archivos"]'
 EDITOR = 'div[contenteditable="true"][aria-label="Pregunta a ChatGPT"]'
 ENVIAR = '[data-testid="send-button"]'
-TURNO = '[data-chatgpt-turn-key$=":assistant"]'
+TURNO = '[data-chatgpt-search-unit-key$=":assistant"]'
+TURNO_ALTERNATIVO = '[data-content-search-unit-key$=":assistant"]'
 TURNO_LEGACY = '[data-turn-key$=":assistant"]'
+TURNO_LEGACY_2 = '[data-chatgpt-turn-key$=":assistant"]'
 TURNO_ROLE = '[data-conversation-role="assistant"]'
 RESERVADOS = {'CON', 'PRN', 'AUX', 'NUL'} | {
     f'{p}{n}' for p in ('COM', 'LPT') for n in range(1, 10)
@@ -164,25 +166,17 @@ def _esperar_adjunto(page, xml_path, config):
 
 
 def _respuestas_asistente(page, config):
-    """Prioriza el DOM de HERO observado: data-chatgpt-turn-key.
+    """Selector REAL: contenedor del mensaje, no su encabezado sr-only.
 
-    El selector anterior data-turn-key ya no aparece en la captura real.
-    Si config.local.json aun lleva ese valor antiguo, lo migramos en tiempo
-    de ejecucion sin obligar a editar el archivo privado.
+    En HTMLs validados, [data-conversation-role=assistant] es un h4
+    cuyo unico texto es 'ChatGPT dijo:', no el mensaje.
+    Configuracion anterior se migra sin editar config.local.json.
     """
     custom = config.get('gpt_respuesta_selector', '')
-    if custom and custom not in (TURNO_LEGACY, TURNO):
+    historicos = (TURNO_LEGACY, TURNO_LEGACY_2, TURNO_ROLE, TURNO, TURNO_ALTERNATIVO)
+    if custom and custom not in historicos:
         return page.locator(custom)
-    actual = page.locator(TURNO)
-    if actual.count():
-        return actual
-    legado = page.locator(TURNO_LEGACY)
-    if legado.count():
-        return legado
-    por_rol = page.locator(TURNO_ROLE)
-    if por_rol.count():
-        return por_rol
-    return actual
+    return page.locator(TURNO)
 
 
 def _marcadores_generacion(page, turno):
@@ -193,7 +187,7 @@ def _marcadores_generacion(page, turno):
     """
     estado = turno.evaluate(
         """el => {
-            const atributos = ['data-turn-state', 'data-chatgpt-turn-state'];
+            const atributos = ['data-talvt-turn-state', 'data-turn-state', 'data-chatgpt-turn-state'];
             for (const nombre of atributos) {
                 const propio = el.getAttribute(nombre);
                 if (propio) return propio;
@@ -256,7 +250,7 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
         respuestas = _respuestas_asistente(page, config)
         cantidad = respuestas.count()
         if not cantidad and not sin_selector_reportado:
-            LOG.warning('Aun no hay turno visible; buscando data-chatgpt-turn-key y selectores antiguos')
+            LOG.info('Esperando contenedor de mensaje de HERO: %s', TURNO)
             sin_selector_reportado = True
         if cantidad > anteriores + 1:
             raise ResultadoIncierto('Multiples respuestas nuevas: captura ambigua')
@@ -264,7 +258,7 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
         if cantidad == anteriores + 1:
             turno = respuestas.nth(anteriores)
             if not visto_respuesta:
-                LOG.info('Turno NUEVO de asistente detectado; selector=%s', TURNO if page.locator(TURNO).count() else ('legacy' if page.locator(TURNO_LEGACY).count() else 'role'))
+                LOG.info('Mensaje NUEVO del asistente detectado; contenedor de contenido localizado')
                 visto_respuesta = True
             try:
                 completo, generando, composer_listo = _marcadores_generacion(page, turno)
@@ -279,8 +273,18 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
                     # El evento (turno completo o reaparicion de Enviar tras
                     # detenerse la generacion) dispara el cierre. Dos lecturas
                     # iguales comprueban que termino el renderizado del DOM.
-                    texto = turno.inner_text(timeout=3000).strip()
-                    codigo = turno.locator('pre code').all_text_contents()
+                    cuerpo = turno.locator('[data-markdown-text-style="assistant-message"]')
+                    fuente = cuerpo.first if cuerpo.count() == 1 else turno
+                    texto = fuente.inner_text(timeout=3000).strip()
+                    codigo = fuente.locator('pre code').all_text_contents()
+                    archivos = turno.locator('button[aria-label="Descargar archivo"], a[download], a[href$=".xml"]').count()
+                    # Si la generacion ha terminado pero el contenido aun esta
+                    # montandose, esperar su aparicion en el DOM, no reenviar.
+                    if not texto and not codigo and not archivos:
+                        firma_anterior = None
+                        lecturas_finales_iguales = 0
+                        page.wait_for_timeout(200)
+                        continue
                     firma = (texto, tuple(codigo))
                     if firma == firma_anterior:
                         lecturas_finales_iguales += 1
@@ -389,45 +393,59 @@ def _enviar(page, config, prompt, archivo=None):
 
 
 def _leer_resultado(page, nodo, config, temporal):
-    # Primero buscar archivo en el TURNO NUEVO, nunca en mensajes anteriores.
-    sel = config.get('gpt_descarga_selector') or 'a[download], a[href$=".xml"]'
-    candidatos = nodo.locator(sel)
-    if candidatos.count() > 1:
-        raise ResultadoIncierto('Multiples enlaces de descarga en la respuesta')
-    if candidatos.count() == 1:
+    """Extrae SOLO del mensaje nuevo, en dos formatos HTML reales de HERO.
+
+    1. Boton aria-label="Descargar archivo" (no es un enlace <a>).
+    2. pre > code, cuyo textContent une los spans de resaltado.
+    """
+    contenedor = nodo.locator('[data-markdown-text-style="assistant-message"]')
+    if contenedor.count() != 1:
+        raise ResultadoIncierto(
+            'El contenedor del mensaje no es unico o aun no esta disponible'
+        )
+    cuerpo = contenedor.first
+
+    selector_archivo = config.get('gpt_descarga_selector') or (
+        'button[aria-label="Descargar archivo"], a[download], a[href$=".xml"]'
+    )
+    # El boton de archivo esta DENTRO del mensaje, pero FUERA de Markdown.
+    descargas = nodo.locator(selector_archivo)
+    cantidad = descargas.count()
+    if cantidad > 1:
+        raise ResultadoIncierto('Varias descargas posibles en la misma respuesta')
+    if cantidad == 1:
         temporal.parent.mkdir(parents=True, exist_ok=True)
-        LOG.info('Posible archivo XML detectado en nueva respuesta')
+        LOG.info('Respuesta con boton de archivo: solicitando descarga')
         try:
-            with page.expect_download(timeout=30000) as info:
-                candidatos.first.click()
-            descarga = info.value
-            descarga.save_as(temporal)
-            # No confiar en nombre sugerido; validar contenido.
-            texto = temporal.read_text(encoding='utf-8-sig')
-            xml = extraer_xml(texto)
-            LOG.info('Archivo XML descargado y estructuralmente validado')
+            with page.expect_download(timeout=int(config.get('timeout_descarga_ms', 30000))) as info:
+                descargas.first.click()
+            archivo = info.value
+            archivo.save_as(temporal)
+            xml = extraer_xml(temporal.read_text(encoding='utf-8-sig'))
+            LOG.info('Archivo descargado y XML validado; caracteres=%s', len(xml))
             return xml
-        except PlaywrightTimeout as e:
-            raise ResultadoIncierto('Enlace de archivo no produjo descarga verificable') from e
+        except PlaywrightTimeout as exc:
+            raise ResultadoIncierto('El boton de archivo no produjo una descarga verificable') from exc
         finally:
             temporal.unlink(missing_ok=True)
-    # El DOM observado contiene data-markdown-style y pre > code con spans coloreados.
-    mensaje = nodo.locator('[data-markdown-style="assistant-message"]')
-    contenido = mensaje.first if mensaje.count() == 1 else nodo
-    bloques = contenido.locator('pre code')
+
+    bloques = cuerpo.locator('pre code')
+    encontrados = []
+    for texto in bloques.all_text_contents():
+        try:
+            encontrados.append(extraer_xml(texto))
+        except SalidaSinXml:
+            continue
+    if len(encontrados) == 1:
+        LOG.info('XML completo recuperado de pre code; caracteres=%s', len(encontrados[0]))
+        return encontrados[0]
+    if len(encontrados) > 1:
+        raise ResultadoIncierto('Varios XML validos en bloques de codigo de la respuesta')
     if bloques.count():
-        validos = []
-        for codigo in bloques.all_text_contents():
-            try:
-                validos.append(extraer_xml(codigo))
-            except SalidaSinXml:
-                pass
-        if len(validos) == 1:
-            LOG.info('XML extraido de bloque de codigo')
-            return validos[0]
-        if len(validos) > 1:
-            raise ResultadoIncierto('Respuesta tiene multiples bloques XML validos')
-    return extraer_xml(contenido.inner_text())
+        # Existe codigo, pero no se obtuvo XML utilizable: si se debe
+        # pedir recuperacion al GPT, no se inventa un XML parcial.
+        raise SalidaSinXml('La respuesta contiene codigo, pero no un XML valido')
+    return extraer_xml(cuerpo.inner_text())
 
 
 def _procesar_uno(page, config, original, temporal):

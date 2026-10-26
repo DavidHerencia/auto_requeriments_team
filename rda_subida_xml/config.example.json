@@ -6,7 +6,7 @@
   "gpt_archivo_selector": "input[type=\"file\"][aria-label=\"Adjuntar archivos\"]",
   "gpt_editor_selector": "div[contenteditable=\"true\"][aria-label=\"Pregunta a ChatGPT\"]",
   "gpt_enviar_selector": "[data-testid=\"send-button\"]",
-  "gpt_respuesta_selector": "[data-chatgpt-turn-key$=\":assistant\"]",
+  "gpt_respuesta_selector": "[data-chatgpt-search-unit-key$=\":assistant\"]",
   "gpt_final_selector": "",
   "gpt_descarga_selector": "",
   "aris_url": "",
@@ -19,5 +19,6 @@
   "selector_error": "",
   "mantener_chrome_abierto": true,
   "timeout_respuesta_ms": 480000,
-  "timeout_envio_ms": 30000
+  "timeout_envio_ms": 30000,
+  "timeout_descarga_ms": 30000
 }
