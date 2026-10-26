@@ -7,6 +7,7 @@ from pathlib import Path
 from xml.sax.saxutils import quoteattr
 from playwright.sync_api import sync_playwright
 from modules.download_xmls import validar
+from config import CHROME_PROFILE
 
 LOG = logging.getLogger(__name__)
 INICIAL = ('Corrige el xml usando y siguiendo las instrucciones de "BPMN ARIS XML Repair". '
@@ -78,7 +79,7 @@ def inspeccionar(config, perfil):
         browser = p.chromium.launch_persistent_context(str(perfil), channel='chrome', headless=False, accept_downloads=True)
         try:
             page = browser.pages[0] if browser.pages else browser.new_page()
-            page.goto(config.get('chatgpt_url') or 'https://chatgpt.com/', wait_until='domcontentloaded')
+            page.goto(config.get('hero_gpt_url') or config.get('chatgpt_url') or 'https://chatgpt.com/', wait_until='domcontentloaded')
             print('Abre HERO - BPMN Modeling. Revisa skill BPMN ARIS XML Repair.')
             print('Identifica URL del GPT, input archivo, editor, enviar, turno completo y descarga.')
             input('Enter para cerrar; no se envia nada en inspeccion...')
@@ -142,7 +143,7 @@ def interactuar(xml_path, config, perfil, temporal):
 def procesar_registros(origen, config, base):
     datos = json.loads(origen.read_text(encoding='utf-8'))
     registros = validar(datos['registros'])
-    perfil = base / 'chrome_profile_gpt'
+    perfil = CHROME_PROFILE
     if config.get('modo_chatgpt','inspeccionar') == 'inspeccionar':
         inspeccionar(config, perfil)
         return None

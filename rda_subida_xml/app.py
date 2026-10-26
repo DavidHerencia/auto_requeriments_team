@@ -2,7 +2,7 @@ import argparse
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from config import DATA, cargar_config
+from config import DATA, CHROME_PROFILE, cargar_config
 from workflow import ejecutar_desde_aris
 from modules.download_xmls import descargar_xmls
 from modules.chatgpt import procesar_registros
@@ -21,7 +21,7 @@ def main():
     logging.info('Inicio fase=%s; log=%s', args.fase, fichero)
     if args.fase == 'download':
         nombre = datetime.now(timezone.utc).strftime('registros_%Y%m%dT%H%M%S_%fZ.json')
-        descargar_xmls(cfg, DATA/'exportaciones'/nombre, DATA/'chrome_profile_sheets')
+        descargar_xmls(cfg, DATA/'exportaciones'/nombre, CHROME_PROFILE)
     elif args.fase == 'chatgpt':
         if not args.archivo:
             parser.error('--archivo obligatorio')

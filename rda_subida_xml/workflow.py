@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from modules.files import preparar_xml
 from modules.aris import procesar_aris
 from modules.reports import guardar_reporte
-from config import DATA
+from config import DATA, CHROME_PROFILE
 
 
 def ejecutar_desde_aris(xml: Path, config: dict):
@@ -13,7 +13,7 @@ def ejecutar_desde_aris(xml: Path, config: dict):
     try:
         preparado = preparar_xml(xml, DATA / "xml")
         trabajo.update(etapa="aris", estado="preparado", archivo=preparado.name)
-        resultado = procesar_aris(preparado, config, DATA / "chrome_profile")
+        resultado = procesar_aris(preparado, config, CHROME_PROFILE)
         trabajo.update(etapa="aris", estado=resultado["estado"], importado=resultado["importado"])
         if resultado.get("error"):
             trabajo["error"] = resultado["error"]

@@ -18,3 +18,6 @@ El archivo final se guarda en `data/corregidos/id_n5 nombre_proceso - Detalle.xm
 El resultado JSON local es `data/exportaciones/procesados_REGISTROS.json`: contiene el registro inicial más `id_archivo_n5` (nombre sin extensión), `xml_corregido_ruta` y `estado=correccion_finalizada`. Se genera checkpoint después de cada registro y los completados se omiten al reanudar. El XML original del JSON no se sobrescribe.
 
 Logs en `data/logs`; no incluyen contenido XML ni prompts. `data/` queda ignorado por Git. No se ha validado la automatización con el DOM de ChatGPT: necesitamos inspeccionarlo antes de habilitar ejecución. ARIS sigue pendiente.
+
+## Perfil único Chrome
+Sheets, ChatGPT y ARIS utilizan el perfil persistente original `data/chrome_profile_sheets/`. No se borra ni migra. Cierra otras ventanas automatizadas antes de iniciar una etapa para evitar bloqueos. En inspección ChatGPT abre `hero_gpt_url` si está configurada. Posteriormente podrá externalizarse para otros RDAs.
