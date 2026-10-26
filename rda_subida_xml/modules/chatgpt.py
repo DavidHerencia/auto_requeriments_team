@@ -161,52 +161,103 @@ def _esperar_adjunto(page, xml_path, config):
 
 
 def _nuevo_turno(page, config, anteriores, usuarios_antes):
+    """Espera la respuesta NUEVA con señales observadas en el prototipo.
+
+    Prefiere data-turn-state=complete y aplica estabilidad del texto. Si el
+    botón Detener no se llegó a ver, usa una espera de estabilidad mayor.
+    """
     sel = _selector(config, 'gpt_respuesta_selector', TURNO)
-    maximo = int(config.get('timeout_respuesta_ms', 480000))
-    limite = time.monotonic() + maximo / 1000
-    completado_desde = None
-    ultima_longitud = -1
+    limite = time.monotonic() + int(config.get('timeout_respuesta_ms', 480000)) / 1000
+    texto_previo = None
+    quieto_desde = None
     generacion_vista = False
-    enviado_visto = False
-    siguiente_log = 0
+    ultimo_log = 0
     while time.monotonic() < limite:
-        cantidad_usuario = page.locator('[data-turn-key$=":user"]').count()
-        enviado_visto |= cantidad_usuario > usuarios_antes
-        nodo = page.locator(sel)
-        n = nodo.count()
-        generando = page.get_by_role('button', name=re.compile('detener|stop|parar|cancel generation', re.I)).count() > 0
+        usuarios = page.locator('[data-turn-key$=":user"]').count()
+        usuario_nuevo = usuarios > usuarios_antes
+        respuestas = page.locator(sel)
+        cantidad = respuestas.count()
+        generando = page.get_by_role(
+            'button', name=re.compile(r'detener|stop|parar|cancel generation', re.I)
+        ).count() > 0
         generacion_vista |= generando
-        if n > anteriores:
-            if n > anteriores + 1:
-                raise ResultadoIncierto('Se detectaron varios turnos nuevos de asistente')
-            respuesta = nodo.nth(anteriores)
+
+        if cantidad > anteriores + 1:
+            raise ResultadoIncierto('Multiples turnos nuevos de asistente: no se sabe cual capturar')
+        if cantidad == anteriores + 1 and usuario_nuevo:
+            turno = respuestas.nth(anteriores)
             try:
-                texto = respuesta.inner_text(timeout=1000)
-                largo = len(texto)
-                estado = respuesta.evaluate('el => el.closest("[data-turn-state]")?.getAttribute("data-turn-state") || el.getAttribute("data-turn-state") || ""')
-                finalizado = estado == 'complete'
-                if largo != ultima_longitud or generando:
-                    ultima_longitud = largo
-                    completado_desde = None
-                elif largo and not generando:
-                    completado_desde = completado_desde or time.monotonic()
-                # Misma estrategia ya validada en el prototipo: turno finalizado + quietud.
-                quietud = 2 if finalizado else (3 if generacion_vista else 8)
-                if enviado_visto and (finalizado or generacion_vista) and completado_desde and time.monotonic() - completado_desde >= quietud:
-                    LOG.info('Respuesta nueva estable; caracteres=%s; turno_complete=%s', largo, finalizado)
-                    if re.search(r'No se ha podido cargar esta respuesta|Something went wrong|Unable to load this response', texto, re.I):
-                        raise ResultadoIncierto('ChatGPT muestra error de carga de respuesta')
-                    return respuesta
-            except ResultadoIncierto:
-                raise
+                texto = turno.inner_text(timeout=1200).strip()
+                estado = turno.evaluate("el => el.closest('[data-turn-state]')?.getAttribute('data-turn-state') || ''")
+                completo = estado == 'complete'
             except Exception:
-                pass
-        if time.monotonic() >= siguiente_log:
-            LOG.info('Esperando respuesta: usuarios_nuevos=%s asistentes_nuevos=%s generando=%s',
-                     enviado_visto, max(0, n - anteriores), generando)
-            siguiente_log = time.monotonic() + 10
+                texto, completo = '', False
+
+            if not texto or generando or texto != texto_previo:
+                texto_previo = texto
+                quieto_desde = None
+            else:
+                quieto_desde = quieto_desde or time.monotonic()
+
+            if quieto_desde:
+                quietud = time.monotonic() - quieto_desde
+                if re.search(
+                    r'No se ha podido cargar esta respuesta|Something went wrong|Unable to load this response',
+                    texto, re.I
+                ) and quietud >= 2:
+                    raise ResultadoIncierto('ChatGPT muestra error de carga de respuesta')
+                espera = 2 if completo else (3 if generacion_vista else 10)
+                if not generando and quietud >= espera:
+                    LOG.info('Respuesta estable: caracteres=%d complete=%s generacion_observada=%s',
+                             len(texto), completo, generacion_vista)
+                    return turno
+
+        if time.monotonic() - ultimo_log >= 10:
+            LOG.info('Esperando respuesta: turno_usuario_nuevo=%s turno_asistente_nuevo=%s generando=%s',
+                     usuario_nuevo, max(0, cantidad - anteriores), generando)
+            ultimo_log = time.monotonic()
         page.wait_for_timeout(500)
-    raise ResultadoIncierto('Timeout o envio sin confirmar: no se reenvia el mensaje')
+    raise ResultadoIncierto('No se pudo confirmar respuesta terminada; no reenviar')
+
+
+def instalar_diagnostico(page):
+    """Registra solo status HTTP y codigos de red, nunca URLs ni archivos."""
+    def fallo(respuesta):
+        try:
+            host = urlsplit(respuesta.url).hostname or ''
+            tipo = respuesta.request.resource_type
+            if host.endswith(('chatgpt.com', 'openai.com')) and tipo in ('fetch', 'xhr', 'document') and respuesta.status >= 400:
+                LOG.warning('ChatGPT HTTP no satisfactorio: status=%s recurso=%s host=%s',
+                            respuesta.status, tipo, host)
+        except Exception:
+            pass
+
+    def error_red(solicitud):
+        try:
+            host = urlsplit(solicitud.url).hostname or ''
+            if host.endswith(('chatgpt.com', 'openai.com')):
+                motivo = str(solicitud.failure or '')
+                codigo = re.search(r'net::[A-Z_0-9]+', motivo)
+                LOG.warning('Solicitud fallida: host=%s causa=%s',
+                            host, codigo.group(0) if codigo else 'desconocida')
+        except Exception:
+            pass
+
+    page.on('response', fallo)
+    page.on('requestfailed', error_red)
+
+
+def registrar_flags_chrome(contexto):
+    """Comprobar flag inseguro sin imprimir linea de comandos ni perfil."""
+    pagina = contexto.new_page()
+    try:
+        pagina.goto('chrome://version/', wait_until='domcontentloaded', timeout=10000)
+        flags = pagina.locator('#command_line').inner_text(timeout=3000)
+        LOG.info('Chrome: flag --no-sandbox detectado=%s', '--no-sandbox' in flags)
+    except Exception:
+        LOG.info('Chrome: flags de lanzamiento no disponibles')
+    finally:
+        pagina.close()
 
 
 def _enviar(page, config, prompt, archivo=None):
@@ -250,8 +301,10 @@ def _leer_resultado(page, nodo, config, temporal):
             raise ResultadoIncierto('Enlace de archivo no produjo descarga verificable') from e
         finally:
             temporal.unlink(missing_ok=True)
-    # Para bloques de codigo, texto del DOM suele ser XML sin el Markdown.
-    bloques = nodo.locator('pre code')
+    # El DOM observado contiene data-markdown-style y pre > code con spans coloreados.
+    mensaje = nodo.locator('[data-markdown-style="assistant-message"]')
+    contenido = mensaje.first if mensaje.count() == 1 else nodo
+    bloques = contenido.locator('pre code')
     if bloques.count():
         validos = []
         for codigo in bloques.all_text_contents():
@@ -264,7 +317,7 @@ def _leer_resultado(page, nodo, config, temporal):
             return validos[0]
         if len(validos) > 1:
             raise ResultadoIncierto('Respuesta tiene multiples bloques XML validos')
-    return extraer_xml(nodo.inner_text())
+    return extraer_xml(contenido.inner_text())
 
 
 def _procesar_uno(page, config, original, temporal):
@@ -309,7 +362,9 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                                                    chromium_sandbox=True, headless=False,
                                                    accept_downloads=True)
         try:
+            registrar_flags_chrome(ctx)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            instalar_diagnostico(page)
             for n, (indice, registro) in enumerate(elegidos, 1):
                 base_archivo = nombre_seguro(registro['id_n5'], registro['nombre_proceso'])
                 final = base / 'corregidos' / (base_archivo + '.xml')

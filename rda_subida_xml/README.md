@@ -33,3 +33,27 @@ Los selectores de respuesta provienen del prototipo; no se han validado en la ve
 El aviso de Chrome `--no-sandbox` observado durante la inspección motivó activar `chromium_sandbox=True` en la etapa ChatGPT. **No se ha demostrado que dicho aviso causara los errores de respuesta.** Si Chrome corporativo no inicia, informar el error de lanzamiento para decidir ajustes. No modificar políticas de Chrome ni el perfil existente.
 
 ARIS queda pendiente de disponibilidad. Solo procesar archivos corporativos que esté permitido subir a ChatGPT.
+
+## Captura de código XML y diagnóstico de errores de HERO
+
+El prototipo previo validó los selectores de turnos `[data-turn-key$=":assistant"]`,
+mensajes `[data-markdown-style="assistant-message"]` y estados `data-turn-state`.
+Esta versión aprovecha dichas señales y permite finalizar por estabilidad cuando no
+se ve el indicador Detener. El DOM puede cambiar; no constituye una API.
+
+La captura prioriza una descarga en el turno nuevo cuando exista un enlace verificable;
+si aparece un bloque como el mostrado en HERO, lee `pre code` dentro de
+`[data-markdown-style="assistant-message"]` (incluidos los spans de coloreado).
+No usa el portapapeles ni captura otros turnos.
+
+Si el navegador muestra «No se ha podido cargar esta respuesta», el código marca
+`requiere_revision` sin reenviar. Además registra solo códigos HTTP de solicitudes
+fallidas, tipos de recurso, errores de red y si Chrome se inició con `--no-sandbox`.
+No guarda URLs de conversación, mensajes ni XML en logs. Estos diagnósticos **no
+reparan por sí mismos** un error del servicio/navegador.
+
+Prueba local: `python -m unittest discover -s tests -v`. Luego ejecutar
+`python app.py --fase chatgpt --archivo data/exportaciones/registros_XXX.json --limite 1`
+con `modo_chatgpt=ejecutar` y un registro autorizado. Para dos, `--limite 2`.
+Un checkpoint existente con estado `requiere_revision` o `envio_iniciado`
+no se reenvía automáticamente; revisar ese caso antes de repetirlo.
