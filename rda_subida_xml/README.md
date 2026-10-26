@@ -245,3 +245,33 @@ prompt ni reintento. Fallos de XML real conservan
 Prueba de edición sobre el XML completo aportado en el chat: proceso y
 lane normalizados, namespaces y nombres de otras lanes intactos; el
 XML real no se incluye en Git.
+
+## ARIS: importar por informe (etapa 3, prueba controlada)
+
+**Selección de carpeta:** pega la URL completa de la carpeta autorizada del repositorio en \`aris_url\` de \`config.local.json\`. Esa URL no se añade al código ni se publica en Git. El robot no navega por otros grupos ni mueve modelos.
+
+**Controles observados en las capturas:** la pestaña Informes usa \`li[data-testid="REPORT_REPOSITORY_BUTTON"] a[aria-label="Informes"]\`; el selector de informes es un combobox de \`div.reportActionPanel\` y se elige por **clic** el texto exacto \`BBVA - Importar BPMN\`; \`Lanzar\` está en el panel de informes. En el modal de archivo hay un \`input[type="file"][name="fileUpload"][accept*=".xml"]\`. Playwright usa \`set_input_files\` sin abrir el diálogo de Windows. Luego Aceptar → Opciones de importación → Importación automática → Aceptar.
+
+**Seguridad:** por defecto \`modo_aris="inspeccionar"\` no ejecuta el informe. Para una importación real cámbialo a \`"ejecutar"\` y confirma escribiendo \`IMPORTAR\` **antes de lanzar** el informe. Se usa el perfil Chrome persistente del RDA; cerrarlo si ya está abierto por otro proceso. La prueba inicial debe usar **un solo XML**, sin navegación ni acciones de mover/copiar carpetas.
+
+El modal terminal se clasifica así:
+- \`informe_completo\` al observar \`El informe está completo.\`. **No prueba por sí solo que el modelo esté presente en la carpeta.**
+- \`xml_rechazado\` al observar \`El fichero seleccionado no es válido\`. Queda registrado para una única revisión adicional con GPT tras validar primero el importador. **No reenvía automáticamente el mismo XML.**
+- \`requiere_revision\` ante timeout, resultado ambiguo u otra interrupción después de iniciar.
+No se infieren éxitos del simple progreso o del texto del histórico de informes.
+
+### Entrada desde JSON corregido
+
+\`\`\`powershell
+python app.py --fase aris --archivo data\exportaciones\procesados_registros_XXX.json --limite 1
+\`\`\`
+
+El módulo lee únicamente registros \`correccion_finalizada\` y verifica que su \`xml_corregido_ruta\` exista dentro de \`data/corregidos\`. Guarda un checkpoint separado \`data/exportaciones/aris_procesados_registros_XXX.json\`, incluyendo hash SHA-256, intentos, estado de ARIS y código de solicitud; si un XML cambia entre ejecuciones, se detiene ese registro. No se modifica el JSON de ChatGPT.
+
+También se admite un XML aislado para inyección directa:
+\`\`\`powershell
+python app.py --fase aris --archivo data\corregidos\archivo - Detalle.xml
+\`\`\`
+(usa comillas cuando el nombre contiene espacios). En modo ejecutar se hace una copia no sobreescrita a \`data/xml\`. El JSON es la entrada recomendada para lotes.
+
+**Qué queda por verificar en tu navegador:** DOM del menú desplegable al seleccionar el informe (el HTML de las opciones no apareció en las capturas), estructura del primer botón Aceptar y DOM del selector de tipo automático. El código se detiene si esos pasos no se identifican de forma inequívoca. Se preserva el modal de resultado para inspeccionarlo manualmente antes de cerrar Chrome. El reintento por GPT tras un error explícito se conectará cuando validemos una importación exitosa y una rechazada, sin automatizar reenvíos a ciegas.

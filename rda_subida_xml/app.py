@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from config import DATA, CHROME_PROFILE, cargar_config
-from workflow import ejecutar_desde_aris
+from workflow import ejecutar_desde_aris, ejecutar_lote_aris
 from modules.download_xmls import descargar_xmls
 from modules.chatgpt import procesar_registros
 
@@ -33,7 +33,12 @@ def main():
     else:
         if not args.archivo:
             parser.error('--archivo obligatorio')
-        ejecutar_desde_aris(args.archivo, cfg)
+        if args.archivo.suffix.lower() == '.json':
+            ejecutar_lote_aris(args.archivo, cfg, limite=args.limite)
+        elif args.archivo.suffix.lower() == '.xml':
+            ejecutar_desde_aris(args.archivo, cfg)
+        else:
+            parser.error('--archivo debe ser un JSON de registros corregidos o XML local')
 
 if __name__ == '__main__':
     main()
