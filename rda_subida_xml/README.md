@@ -131,3 +131,21 @@ de cerrar Chrome. Evitar un segundo Ctrl+C durante la limpieza.
 lotes. Los registros que ya tienen respuesta en HERO pero figuran como
 `requiere_revision` no se reenvían automáticamente. Hay que revisar
 o recuperar su resultado existente antes de volver a enviarlos.
+
+## Detección al terminar una respuesta larga en HERO
+
+La inspección mostró un botón con `aria-label="Iniciar Voz"` y
+`data-state="closed"` después de la respuesta. **El atributo
+`data-state=closed` corresponde a un control emergente/tooltip del
+botón y no es evidencia fiable de finalización.**
+
+El RDA ahora verifica: (1) si el turno nuevo tiene estado `complete`;
+o (2) si **se observó el botón Detener**, luego desapareció y el composer
+volvió a estar listo (botón Enviar habilitado o botón `Iniciar Voz`
+visible). Nunca cierra solo porque el XML parezca completo o por una
+espera temporal. Se mantiene un tiempo máximo configurable por seguridad.
+
+Si el robot no ve el botón Detener ni el atributo `complete`, guardará
+`requiere_revision` sin reenviar a ciegas. En esa situación necesitamos
+inspeccionar el HTML del botón mientras está generando para confirmar
+el selector exacto. Los controles del DOM de ChatGPT no son API estable.

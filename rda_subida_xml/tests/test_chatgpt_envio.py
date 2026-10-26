@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from modules.chatgpt import _enviar, _nuevo_turno, _puede_cerrar_respuesta
+from modules.chatgpt import _enviar, _nuevo_turno, _puede_cerrar_respuesta, _marcadores_generacion
 
 
 class TestEnvio(unittest.TestCase):
@@ -23,6 +23,24 @@ class TestEnvio(unittest.TestCase):
         self.assertFalse(_puede_cerrar_respuesta(False, False, True, False))
         self.assertTrue(_puede_cerrar_respuesta(True, False, False, False))
         self.assertTrue(_puede_cerrar_respuesta(False, False, True, True))
+
+    def test_iniciar_voz_es_senal_composer_listo_no_fin_por_si_sola(self):
+        pagina = MagicMock()
+        turno = MagicMock()
+        turno.evaluate.return_value = ''
+        detenido = MagicMock()
+        detenido.count.return_value = 0
+        boton_enviar = MagicMock()
+        boton_enviar.count.return_value = 0
+        voz = MagicMock()
+        voz.count.return_value = 1
+        pagina.locator.side_effect = [detenido, boton_enviar, voz]
+        pagina.get_by_role.return_value.count.return_value = 0
+
+        completo, generando, composer_listo = _marcadores_generacion(pagina, turno)
+        self.assertEqual((completo, generando, composer_listo), (False, False, True))
+        self.assertFalse(_puede_cerrar_respuesta(completo, generando, False, composer_listo))
+        self.assertTrue(_puede_cerrar_respuesta(completo, generando, True, composer_listo))
 
     @patch('modules.chatgpt._marcadores_generacion')
     def test_turno_asistente_confirma_envio_y_espera_fin(self, marcadores):

@@ -186,7 +186,11 @@ def _respuestas_asistente(page, config):
 
 
 def _marcadores_generacion(page, turno):
-    """Observa estado del TURNO ACTUAL y controles activos, sin leer contenido."""
+    """Observa señales reales del turno y el composer.
+
+    data-state="closed" sobre Iniciar Voz pertenece al estado de su tooltip:
+    NO demuestra por sí mismo que ChatGPT terminó de generar.
+    """
     estado = turno.evaluate(
         """el => {
             const atributos = ['data-turn-state', 'data-chatgpt-turn-state'];
@@ -201,19 +205,36 @@ def _marcadores_generacion(page, turno):
             return '';
         }"""
     )
-    stop = page.locator('[data-testid="stop-button"]:visible').count() > 0
-    if not stop:
-        stop = page.get_by_role(
-            'button', name=re.compile(r'detener|stop|parar|cancel generation', re.I)
-        ).count() > 0
-    boton = page.locator(ENVIAR)
-    enviar_listo = boton.count() == 1 and boton.first.is_visible() and boton.first.is_enabled()
-    return estado == 'complete', stop, enviar_listo
+    detener_por_testid = page.locator('[data-testid="stop-button"]:visible')
+    detener_por_nombre = page.get_by_role(
+        'button', name=re.compile(r'detener|stop|parar|cancel generation', re.I)
+    )
+    generando = detener_por_testid.count() > 0 or detener_por_nombre.count() > 0
+
+    # Durante una generación extensa el composer presenta "Detener".
+    # Al terminar reaparece "Iniciar Voz" (visible en el DOM inspeccionado).
+    boton_enviar = page.locator(ENVIAR)
+    enviar_habilitado = (
+        boton_enviar.count() == 1
+        and boton_enviar.first.is_visible()
+        and boton_enviar.first.is_enabled()
+    )
+    voz = page.locator(
+        'button[aria-label="Iniciar Voz"]:visible, '
+        'button[aria-label="Start voice"]:visible, '
+        'button[aria-label="Start Voice"]:visible'
+    )
+    composer_listo = enviar_habilitado or voz.count() > 0
+    return estado == 'complete', generando, composer_listo
 
 
-def _puede_cerrar_respuesta(completo, generando, generacion_vista, enviar_listo):
-    """Solo eventos de finalizacion: nunca basarse en segundos de texto estable."""
-    return not generando and (completo or (generacion_vista and enviar_listo))
+def _puede_cerrar_respuesta(completo, generando, generacion_vista, composer_listo):
+    """Solo señales terminales: nunca solo el XML visible o tiempo estable.
+
+    Si no se observó detener durante la generación, se requiere el
+    estado explícito "complete", para evitar guardar una respuesta parcial.
+    """
+    return not generando and (completo or (generacion_vista and composer_listo))
 
 
 def _nuevo_turno(page, config, anteriores, usuarios_antes):
@@ -246,15 +267,15 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
                 LOG.info('Turno NUEVO de asistente detectado; selector=%s', TURNO if page.locator(TURNO).count() else ('legacy' if page.locator(TURNO_LEGACY).count() else 'role'))
                 visto_respuesta = True
             try:
-                completo, generando, enviar_listo = _marcadores_generacion(page, turno)
+                completo, generando, composer_listo = _marcadores_generacion(page, turno)
                 generacion_vista |= generando
-                estado = (completo, generando, enviar_listo)
+                estado = (completo, generando, composer_listo)
                 if estado != estado_anterior:
-                    LOG.info('Estado generacion: turno_complete=%s stop_visible=%s enviar_listo=%s',
-                             completo, generando, enviar_listo)
+                    LOG.info('Estado generacion: turno_complete=%s detener_visible=%s composer_listo=%s',
+                             completo, generando, composer_listo)
                     estado_anterior = estado
 
-                if _puede_cerrar_respuesta(completo, generando, generacion_vista, enviar_listo):
+                if _puede_cerrar_respuesta(completo, generando, generacion_vista, composer_listo):
                     # El evento (turno completo o reaparicion de Enviar tras
                     # detenerse la generacion) dispara el cierre. Dos lecturas
                     # iguales comprueban que termino el renderizado del DOM.
