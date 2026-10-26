@@ -46,6 +46,9 @@ class SalidaSinXml(ValueError):
 class ResultadoIncierto(RuntimeError):
     """No se pudo verificar resultado; prohibido reintentar envio automaticamente."""
 
+class ErrorPostprocesamiento(ValueError):
+    """XML valido capturado, pero no se pudo aplicar la modificacion BPMN."""
+
 
 def nombre_seguro(id_n5, nombre_proceso):
     base = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '-', f'{id_n5} {nombre_proceso}')
@@ -76,28 +79,63 @@ def extraer_xml(texto):
 
 
 def corregir_lane(texto, id_n5, nombre_proceso):
-    raiz = ET.fromstring(texto)
-    lanes = [x for x in raiz.iter() if x.attrib.get('id') == 'LanePrincipal']
+    """Edita UNICAMENTE el name de la lane principal sin reserializar XML.
+
+    Variantes observadas: LanePrincipal y Lane_Principal. Exige que
+    exactamente UNA de ellas corresponda a un elemento BPMN <lane>.
+    """
+    try:
+        raiz = ET.fromstring(texto)
+    except ET.ParseError as exc:
+        raise ErrorPostprocesamiento('El XML capturado dejo de ser bien formado') from exc
+    permitidas = {'LanePrincipal', 'Lane_Principal'}
+    lanes = [
+        x for x in raiz.iter()
+        if x.tag.rsplit('}', 1)[-1] == 'lane'
+        and x.attrib.get('id') in permitidas
+    ]
     if len(lanes) != 1:
-        raise SalidaSinXml('No existe un unico elemento LanePrincipal')
-    # Edicion minima, sin reserializar el BPMN ni alterar prefijos XML.
-    tags = re.finditer(r'<[A-Za-z_][\w.:-]*\b[^>]*>', texto, flags=re.S)
-    candidatos = [m for m in tags if re.search(r'\bid\s*=\s*(["\x27])LanePrincipal\1', m.group())]
-    if len(candidatos) != 1:
-        raise SalidaSinXml('No se localizo exactamente el tag LanePrincipal')
-    m = candidatos[0]
-    attrs = list(re.finditer(r'\bname\s*=\s*(["\x27]).*?\1', m.group(), flags=re.S))
-    if len(attrs) != 1:
-        raise SalidaSinXml('LanePrincipal no tiene exactamente un atributo name')
-    a = attrs[0]
+        raise ErrorPostprocesamiento(
+            f'Se esperaba una sola lane principal ({", ".join(sorted(permitidas))}); '
+            f'se encontraron {len(lanes)}'
+        )
+    id_lane = lanes[0].attrib['id']
+
+    # Cambio textual mínimo para mantener intacta la serialización BPMN.
+    tags = [
+        m for m in re.finditer(r'<([A-Za-z_][\w.:-]*)\b[^>]*>', texto, flags=re.S)
+        if m.group(1).rsplit(':', 1)[-1] == 'lane'
+        and re.search(r'\bid\s*=\s*(["\x27])' + re.escape(id_lane) + r'\1', m.group())
+    ]
+    if len(tags) != 1:
+        raise ErrorPostprocesamiento(f'No se identifico exactamente la etiqueta XML {id_lane}')
+    tag_match = tags[0]
+    atributos = list(re.finditer(r'\bname\s*=\s*(["\x27]).*?\1', tag_match.group(), flags=re.S))
+    if len(atributos) != 1:
+        raise ErrorPostprocesamiento(f'La lane {id_lane} no tiene exactamente un atributo name')
+
+    atributo = atributos[0]
     nombre = f'{id_n5} {nombre_proceso}'
-    tag = m.group()[:a.start()] + 'name=' + quoteattr(nombre) + m.group()[a.end():]
-    modificado = texto[:m.start()] + tag + texto[m.end():]
-    validado = ET.fromstring(modificado)
-    final = [x for x in validado.iter() if x.attrib.get('id') == 'LanePrincipal']
-    if len(final) != 1 or final[0].attrib.get('name') != nombre:
-        raise SalidaSinXml('No se verifico la modificacion de LanePrincipal')
-    return modificado
+    etiqueta = (
+        tag_match.group()[:atributo.start()]
+        + 'name=' + quoteattr(nombre)
+        + tag_match.group()[atributo.end():]
+    )
+    resultado = texto[:tag_match.start()] + etiqueta + texto[tag_match.end():]
+
+    try:
+        actualizado = ET.fromstring(resultado)
+    except ET.ParseError as exc:
+        raise ErrorPostprocesamiento('XML invalido despues de modificar la lane') from exc
+    verificadas = [
+        x for x in actualizado.iter()
+        if x.tag.rsplit('}', 1)[-1] == 'lane'
+        and x.attrib.get('id') == id_lane
+    ]
+    if len(verificadas) != 1 or verificadas[0].attrib.get('name') != nombre:
+        raise ErrorPostprocesamiento('No se verifico el nuevo nombre de la lane principal')
+    LOG.info('Postprocesamiento XML correcto: lane_id=%s', id_lane)
+    return resultado
 
 
 def escribir_json(ruta, trabajos):
@@ -499,6 +537,7 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                 final = base / 'corregidos' / (base_archivo + '.xml')
                 original = base / 'originales' / (base_archivo + '.xml')
                 temporal = base / 'temporales' / (base_archivo + '.xml')
+                capturado = base / 'capturados' / (base_archivo + '.xml')
                 LOG.info('Registro %s/%s, solicitud=%s: preparando', n, len(elegidos), registro['id_solicitud'])
                 if final.exists():
                     registro.update(estado='requiere_revision', motivo='Archivo final preexistente; revisar sin sobrescribir')
@@ -516,17 +555,43 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                     registro['estado'] = 'envio_iniciado'
                     escribir_json(ruta, trabajos)
                     texto = _procesar_uno(page, config, original, temporal)
+                    # Persistir INMEDIATAMENTE el XML ya validado antes de
+                    # cualquier posprocesamiento que pudiera fallar.
+                    capturado.parent.mkdir(parents=True, exist_ok=True)
+                    if capturado.exists():
+                        if capturado.read_text(encoding='utf-8') != texto:
+                            raise ResultadoIncierto('Conflicto con XML capturado previamente')
+                    else:
+                        with capturado.open('x', encoding='utf-8') as f:
+                            f.write(texto)
+                    registro.update(
+                        estado='xml_capturado', id_archivo_n5=base_archivo,
+                        xml_capturado_ruta=str(capturado)
+                    )
+                    escribir_json(ruta, trabajos)
+                    LOG.info('Registro %s: XML de HERO capturado y persistido (%s caracteres)', n, len(texto))
+
                     xml_final = corregir_lane(texto, registro['id_n5'], registro['nombre_proceso'])
                     final.parent.mkdir(parents=True, exist_ok=True)
                     with final.open('x', encoding='utf-8') as f:
                         f.write(xml_final)
-                    registro.update(estado='correccion_finalizada', id_archivo_n5=base_archivo,
-                                    xml_corregido_ruta=str(final))
+                    registro.update(
+                        estado='correccion_finalizada',
+                        id_archivo_n5=base_archivo,
+                        xml_corregido_ruta=str(final)
+                    )
                     registro.pop('motivo', None)
-                    LOG.info('Registro %s: XML corregido, LanePrincipal validado, archivo guardado', n)
+                    LOG.info('Registro %s: lane principal actualizada y XML definitivo guardado', n)
                 except SalidaSinXml as e:
                     registro.update(estado='correccion_fallida', motivo=str(e))
-                    LOG.warning('Registro %s: segundo intento sin XML valido', n)
+                    LOG.warning('Registro %s: respuesta de HERO sin XML recuperable: %s', n, e)
+                except ErrorPostprocesamiento as e:
+                    registro.update(
+                        estado='postprocesamiento_pendiente',
+                        motivo=str(e),
+                        xml_capturado_ruta=str(capturado)
+                    )
+                    LOG.warning('Registro %s: XML capturado, requiere revisar la lane: %s', n, e)
                 except KeyboardInterrupt:
                     interrumpido = True
                     registro.update(

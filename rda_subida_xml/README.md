@@ -178,3 +178,32 @@ Se analizaron dos exportaciones HTML completas de conversaciones de HERO
 Los fixtures de las pruebas son **sintéticos**: ningún XML o HTML de usuario
 se incorpora al repositorio. Las pruebas de Playwright contra una respuesta
 real requieren la siguiente ejecución en el Chrome autorizado.
+
+## Hallazgo corregido: el XML sí se capturaba
+
+En el log del 26/10 (solicitud S000000000659), Playwright confirmó:
+`Respuesta COMPLETA: caracteres=32041 bloques_codigo=1` y
+`XML completo recuperado de pre code; caracteres=32037`.
+El posterior warning «segundo intento sin XML válido» fue **incorrecto**:
+se originó en `corregir_lane()`, no en la captura del GPT.
+
+En los dos HTML de prueba el ID real es `Lane_Principal`, no
+`LanePrincipal`. Ahora se admiten esas dos variantes documentadas, solo
+si identifican **exactamente una** etiqueta BPMN `lane`.
+El cambio sigue siendo textual únicamente sobre el atributo `name`;
+no se reserializan los namespaces ni el XML. Si no hay lane inequívoca,
+NO se inventa ni reemplaza una arbitraria.
+
+Como precaución, antes de modificar la lane, el XML capturado válido se
+guarda en `data/capturados/`, y se refleja inmediatamente en el checkpoint:
+`estado=xml_capturado`, `xml_capturado_ruta` e `id_archivo_n5`.
+Después:
+- `correccion_finalizada`: lane actualizada, XML definitivo validado.
+- `postprocesamiento_pendiente`: el XML de HERO **ya existe en disco**,
+  pero la lane requiere revisión. No repetir llamada al GPT a ciegas.
+- `correccion_fallida`: la respuesta de GPT realmente no produjo XML válido.
+  No se confunde con un error posterior.
+
+Los checkpoints antiguos con `correccion_fallida` por este bug no disponen
+del XML capturado localmente; deben recuperarse de los chats existentes si
+se quiere evitar otra generación. Ningún archivo real ni secreto va a Git.
