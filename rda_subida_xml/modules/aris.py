@@ -229,20 +229,140 @@ def _aceptar(modal, descripcion):
     opcion.click()
 
 
-def adjuntar_xml(page, ruta):
+def _modal_activo_con_texto(page, texto):
+    """True solo si el modal solicitado está realmente visible."""
+    return any(
+        d.is_visible()
+        for d in page.locator(DIALOG).filter(
+            has=page.get_by_text(texto, exact=False)
+        ).all()
+    )
+
+
+def _esperar_transicion_archivo(page, cfg):
+    """Esperar EVENTO: opciones nuevas, rechazo o botón de fichero habilitado.
+
+    GWT puede subir el fichero en onchange y avanzar automáticamente a
+    Opciones de importación. En ese caso NO pulsar Aceptar de nuevo.
+    """
+    timeout = int(cfg.get('aris_timeout_paso_ms', 45000))
+    script = """() => {
+        const visible = el => {
+            const r = el.getBoundingClientRect();
+            const css = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 &&
+                   css.visibility !== 'hidden' && css.display !== 'none';
+        };
+        const dialogos = [...document.querySelectorAll(
+            'div[role="dialog"][aria-hidden="false"]'
+        )].filter(visible);
+        if (dialogos.some(d => (d.textContent || '').includes('Opciones de importación')))
+            return 'opciones';
+        if (dialogos.some(d => (d.textContent || '').includes('El fichero seleccionado no es válido')))
+            return 'rechazo';
+        const fichero = dialogos.find(d =>
+            !!d.querySelector('input[type="file"][name="fileUpload"]')
+        );
+        if (!fichero) return false;
+        const aceptar = [...fichero.querySelectorAll('a, button')]
+            .find(el => visible(el) && (
+                el.getAttribute('aria-label') === 'Aceptar' ||
+                (el.textContent || '').trim() === 'Aceptar'
+            ));
+        if (aceptar && aceptar.getAttribute('aria-disabled') !== 'true' &&
+            !aceptar.matches(':disabled'))
+            return 'aceptar_archivo';
+        return false;
+    }"""
+    try:
+        return page.wait_for_function(script, timeout=timeout).json_value()
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado(
+            'No avanzó la selección de archivo ni se habilitó Aceptar: revisar ventana ARIS'
+        ) from exc
+
+
+def adjuntar_xml(page, ruta, cfg=None):
+    """Selecciona el XML una vez y observa cómo ARIS avanza.
+
+    Retorna 'opciones' o 'rechazo'. Nunca confirma dos veces un formulario.
+    """
+    cfg = cfg or {}
     input_file = page.locator(FILE_INPUT)
     input_file.wait_for(state='attached')
     if input_file.count() != 1:
         raise ArisNoConfirmado('No se encontró un único input de archivo XML')
     dialogo = _dialogo_con(page, FILE_INPUT)
-    if dialogo.count() != 1:
-        raise ArisNoConfirmado('No se encontró el modal Seleccionar fichero XML')
+    if dialogo.count() != 1 or not dialogo.is_visible():
+        raise ArisNoConfirmado('No se encontró el modal activo Seleccionar fichero XML')
     input_file.set_input_files(str(ruta))
     nombres = input_file.evaluate('el => Array.from(el.files || []).map(f => f.name)')
     if nombres != [ruta.name]:
         raise ArisNoConfirmado('El selector de archivos no confirmó el XML solicitado')
     LOG.info('Archivo seleccionado para ARIS (sin copiar su contenido): %s', ruta.name)
-    _aceptar(dialogo, 'Aceptar archivo XML')
+
+    senal = _esperar_transicion_archivo(page, cfg)
+    if senal == 'opciones':
+        LOG.info('ARIS avanzó automáticamente a Opciones de importación; sin segundo clic')
+        return 'opciones'
+    if senal == 'rechazo':
+        LOG.warning('ARIS rechazó el fichero antes de mostrar opciones')
+        return 'rechazo'
+    if senal != 'aceptar_archivo':
+        raise ArisNoConfirmado(f'Transición inesperada tras seleccionar XML: {senal}')
+
+    # La página puede avanzar entre la detección y el clic. No usar jamás
+    # un botón obsoleto ni repetir el clic si ARIS ya cambió de modal.
+    if _modal_activo_con_texto(page, 'Opciones de importación'):
+        LOG.info('ARIS cambió a Opciones de importación antes del clic; se omite')
+        return 'opciones'
+    if _modal_activo_con_texto(page, FILE_ERROR):
+        LOG.warning('ARIS rechazó el XML antes del clic del archivo')
+        return 'rechazo'
+    if not dialogo.is_visible():
+        raise ArisNoConfirmado('El diálogo del fichero desapareció sin resultado confirmado')
+    try:
+        _aceptar(dialogo, 'Aceptar archivo XML')
+        LOG.info('ARIS: clic de confirmación del archivo realizado una vez')
+    except Exception:
+        if not (
+            _modal_activo_con_texto(page, 'Opciones de importación') or
+            _modal_activo_con_texto(page, FILE_ERROR)
+        ):
+            raise
+        LOG.info('ARIS cambió de modal durante la confirmación; clic no repetido')
+
+    # La segunda etapa tiene que estar visiblemente lista antes de continuar.
+    resultado = _esperar_transicion_final_archivo(page, cfg)
+    return resultado
+
+
+def _esperar_transicion_final_archivo(page, cfg):
+    timeout = int(cfg.get('aris_timeout_paso_ms', 45000))
+    try:
+        estado = page.wait_for_function(
+            """() => {
+                const visibles = [...document.querySelectorAll(
+                    'div[role="dialog"][aria-hidden="false"]'
+                )].filter(d => {
+                    const r = d.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                });
+                if (visibles.some(d => (d.textContent || '').includes('Opciones de importación')))
+                    return 'opciones';
+                if (visibles.some(d => (d.textContent || '').includes('El fichero seleccionado no es válido')))
+                    return 'rechazo';
+                return false;
+            }""",
+            timeout=timeout
+        ).json_value()
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado('No apareció Opciones de importación después de adjuntar XML') from exc
+    if estado == 'opciones':
+        LOG.info('ARIS: modal Opciones de importación confirmado')
+    else:
+        LOG.warning('ARIS: XML rechazado antes de abrir Opciones')
+    return estado
 
 
 def _opcion_auto(page, cfg):
@@ -358,9 +478,14 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
                 al_iniciar()
             page.locator(LAUNCH).click()
             LOG.info('Informe ARIS lanzado')
-            adjuntar_xml(page, xml)
-            _opcion_auto(page, cfg)
-            LOG.info('Importación automática confirmada; esperando resultado de ARIS')
+            etapa_archivo = adjuntar_xml(page, xml, cfg)
+            if etapa_archivo == 'opciones':
+                _opcion_auto(page, cfg)
+                LOG.info('Importación automática confirmada; esperando resultado de ARIS')
+            elif etapa_archivo == 'rechazo':
+                LOG.warning('No se confirmarán opciones: ARIS ya rechazó el XML')
+            else:
+                raise ArisNoConfirmado('Resultado inesperado al seleccionar fichero')
             resultado = _resultado(page, cfg)
             if cfg.get('mantener_chrome_abierto', True):
                 input('Revisa el resultado en Chrome. Enter para cerrar... ')

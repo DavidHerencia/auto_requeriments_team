@@ -360,3 +360,31 @@ El log esperado para la prueba sin efectos incluye:
 \`ARIS: informe exacto seleccionado por clic: BBVA - Importar BPMN\`.
 Si el desplegable cambia de estructura y falla, detenerse y compartir
 solo la sección del DOM del menú abierto; no subir secretos al repo.
+
+
+## ARIS: transición automática tras elegir el XML (26-10-2026)
+
+Los logs confirmaron que \`set_input_files()\` adjuntó el XML; a continuación
+la interfaz ya mostraba **Opciones de importación**, pero el robot intentaba
+pulsar \`Aceptar\` en el modal anterior, ahora deshabilitado.
+No era un problema del explorador nativo de Windows: Playwright no necesita
+abrirlo, solo usar el \`input[type="file"]\` HTML.
+
+El RDA ahora espera la primera señal observable tras seleccionar:
+- \`Opciones de importación\`: ARIS avanzó automáticamente. No pulsar
+  \`Aceptar\` en el selector de fichero otra vez.
+- \`El fichero seleccionado no es válido\`: registrar rechazo explícito.
+- \`Aceptar\` habilitado en el modal de fichero (si ARIS no avanzó):
+  pulsarlo **una vez** y esperar el siguiente modal.
+
+Si entre la comprobación y el clic cambia el modal, se evita repetir
+la acción. Luego se valida \`Importación automática\`, se acepta, y se
+espera el resultado final del informe. \`aris_timeout_paso_ms\`
+(45000) limita esperas sin sustituir los eventos. No se leen ni registran
+datos privados de los XML.
+
+**Checkpoint:** S000000000799 quedó \`requiere_revision\` porque ya se
+lanzó el informe y no se confirmó su resultado. El RDA no lo repetirá
+automáticamente. Comprobar en ARIS si hubo importación antes de
+reprocesarlo; para la siguiente prueba se puede utilizar el siguiente
+registro \`pendiente\`. No borrar ni editar a ciegas checkpoints.

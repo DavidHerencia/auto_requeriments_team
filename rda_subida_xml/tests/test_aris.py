@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from modules.aris import clasificar_mensaje, validar_xml_aris, _arise_url, seleccionar_informe, _abrir_informes, _contexto_actual_informes, ArisNoConfirmado
+from modules.aris import clasificar_mensaje, validar_xml_aris, _arise_url, seleccionar_informe, _abrir_informes, _contexto_actual_informes, ArisNoConfirmado, adjuntar_xml
 import workflow
 
 
@@ -157,6 +157,81 @@ class TestAris(unittest.TestCase):
         self.assertEqual(_contexto_actual_informes(pagina, {
             'modo_aris': 'preparar'
         }), '03 PROYECTOS')
+
+    @patch('modules.aris._esperar_transicion_archivo', return_value='opciones')
+    @patch('modules.aris._aceptar')
+    @patch('modules.aris._dialogo_con')
+    def test_xml_seleccionado_avanza_a_opciones_sin_aceptar_dos_veces(
+        self, get_dialogo, aceptar, transicion
+    ):
+        page = MagicMock()
+        xml = Path('ejemplo.xml')
+        archivo = MagicMock()
+        archivo.count.return_value = 1
+        archivo.evaluate.return_value = [xml.name]
+        page.locator.return_value = archivo
+        get_dialogo.return_value.count.return_value = 1
+        get_dialogo.return_value.is_visible.return_value = True
+
+        resultado = adjuntar_xml(page, xml, {})
+        self.assertEqual(resultado, 'opciones')
+        archivo.set_input_files.assert_called_once_with(str(xml))
+        aceptar.assert_not_called()
+        transicion.assert_called_once()
+
+    @patch('modules.aris._esperar_transicion_archivo', return_value='rechazo')
+    @patch('modules.aris._aceptar')
+    @patch('modules.aris._dialogo_con')
+    def test_xml_rechazado_no_confirma_dialogo(self, get_dialogo, aceptar, _trans):
+        page = MagicMock()
+        xml = Path('ejemplo.xml')
+        archivo = MagicMock()
+        archivo.count.return_value = 1
+        archivo.evaluate.return_value = [xml.name]
+        page.locator.return_value = archivo
+        get_dialogo.return_value.count.return_value = 1
+        get_dialogo.return_value.is_visible.return_value = True
+        self.assertEqual(adjuntar_xml(page, xml, {}), 'rechazo')
+        aceptar.assert_not_called()
+
+    @patch('modules.aris._esperar_transicion_final_archivo', return_value='opciones')
+    @patch('modules.aris._modal_activo_con_texto', return_value=False)
+    @patch('modules.aris._esperar_transicion_archivo', return_value='aceptar_archivo')
+    @patch('modules.aris._aceptar')
+    @patch('modules.aris._dialogo_con')
+    def test_aceptar_solo_una_vez_si_aun_sigue_modal_archivo(
+        self, get_dialogo, aceptar, _trans, _modal, siguiente
+    ):
+        page = MagicMock()
+        xml = Path('ejemplo.xml')
+        archivo = MagicMock()
+        archivo.count.return_value = 1
+        archivo.evaluate.return_value = [xml.name]
+        page.locator.return_value = archivo
+        get_dialogo.return_value.count.return_value = 1
+        get_dialogo.return_value.is_visible.return_value = True
+        self.assertEqual(adjuntar_xml(page, xml, {}), 'opciones')
+        aceptar.assert_called_once()
+        siguiente.assert_called_once()
+
+    @patch('modules.aris._esperar_transicion_archivo', return_value='aceptar_archivo')
+    @patch('modules.aris._modal_activo_con_texto')
+    @patch('modules.aris._aceptar')
+    @patch('modules.aris._dialogo_con')
+    def test_cambio_de_modal_antes_del_click_no_lo_repite(
+        self, get_dialogo, aceptar, modal, _trans
+    ):
+        page = MagicMock()
+        xml = Path('ejemplo.xml')
+        archivo = MagicMock()
+        archivo.count.return_value = 1
+        archivo.evaluate.return_value = [xml.name]
+        page.locator.return_value = archivo
+        get_dialogo.return_value.count.return_value = 1
+        get_dialogo.return_value.is_visible.return_value = True
+        modal.side_effect = [True]
+        self.assertEqual(adjuntar_xml(page, xml, {}), 'opciones')
+        aceptar.assert_not_called()
 
     def test_pestana_activa_no_se_clickea_otra_vez(self):
         pagina = MagicMock()
