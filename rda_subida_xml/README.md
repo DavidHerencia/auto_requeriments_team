@@ -1,27 +1,30 @@
-# RDA subida XML — base de integración ARIS
+# RDA XML: extracción y corrección
 
-Implementación inicial intencionalmente enfocada en **un XML**. El pipeline puede iterarse después. Los adaptadores de Sheets y ChatGPT son contratos pendientes, no funcionalidades fingidas.
+## Hoja
+Crea una pestaña llamada **EXPORT_RDA** con las cuatro columnas exactas:
+`id_solicitud`, `id_n5`, `nombre_proceso`, `xml`. Identificadores como texto.
 
-## Primer uso en Windows
+## Apps Script
+En el Sheet: Extensiones > Apps Script. Copia `apps_script/Code.gs` y agrega archivo HTML llamado **Bridge** con `apps_script/Bridge.html`. Despliega aplicación web ejecutada como **usuario que accede**, solo usuarios autorizados. Copia URL `/exec` en `config.local.json` como `apps_script_url`. El puente solo lee.
 
-1. Tener Python y Google Chrome instalados.
-2. Ejecutar `py -m venv .venv`, `.venv\Scripts\python -m pip install -r requirements.txt` y `.venv\Scripts\python -m playwright install chrome` en `rda_subida_xml` (o usar `iniciar.bat` para instalar y ver ayuda).
-3. Copiar `config.example.json` a `config.local.json` y configurar `aris_url` con la URL corporativa de ARIS. No compartir este archivo.
-4. Ejecutar `.venv\Scripts\python app.py --xml examples\ejemplo_sintetico.xml`.
-5. Iniciar sesión manualmente en Chrome cuando se abra; navegar hasta la pantalla de importación. En modo `inspeccionar` **no se importa ningún archivo**.
-6. Documentar selectores reales y condiciones de confirmación **sin copiar cookies, contraseñas ni datos reales al repositorio**.
+## Instalar
+```powershell
+cd rda_subida_xml
+py -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m playwright install chrome
+copy config.example.json config.local.json
+.venv\Scripts\python app.py --fase download
+```
 
-## Importación real (después de inspeccionar)
+Al autenticar Chrome y presionar Enter, se genera `data/exportaciones/registros_*.json` con `version` y `registros`, cada registro tiene exactamente cuatro campos.
 
-Configurar `modo_aris: importar` y los cuatro selectores. El programa requiere una confirmación explícita antes de clicar Importar. Una ausencia de confirmación genera `requiere_revision` para evitar reintentos ciegos. La confirmación visual es provisional: se debe validar contra el comportamiento real de ARIS.
+## Corrección / inspección
+```powershell
+.venv\Scripts\python app.py --fase chatgpt --archivo data\exportaciones\registros_XXX.json
+```
+Inicialmente `modo_chatgpt=inspeccionar`: se abre ChatGPT sin enviar nada. **Solo 1 registro** en esta fase. Para automatizar: inspeccionar juntos selector de adjuntar, editor, enviar, nueva respuesta y señal de turno completado. Configurar selectores reales y `modo_chatgpt=ejecutar`. Se adjunta XML y se escribe `@skill_revisor_y_corregidor_xml`, cuya activación efectiva debe comprobarse manualmente. No asumimos que el texto equivale a seleccionar la skill.
 
-## Carpeta local
+Si se confirma respuesta XML única y válida, se guarda en `data/corregidos/<id_n5 nombre_proceso>.xml`, reemplazando caracteres inválidos de Windows por `-`, y se crea JSON derivado con `id_archivo_n5`, `estado=correccion_finalizada` y ruta del XML. No altera JSON original. No reintentar envío si el estado del mensaje es incierto.
 
-`data/` (ignorada por Git) contiene XML de trabajo, perfil Chrome y reportes. El código nunca exporta cookies. Para un segundo intento, usar un nombre nuevo o limpiar exclusivamente datos sintéticos de prueba; no sobrescribe archivos.
-
-## Advertencias
-
-- La estructura exacta XML compatible con ARIS está **por verificar**: el ejemplo solo es XML bien formado, no un XML importable garantizado.
-- `sheets.py` y `chatgpt.py` son interfaces pendientes; no hay conexión real todavía.
-- La generación del mapa de roles, organización definitiva y persistencia robusta son etapas siguientes.
-- Solo usar con cuentas y datos autorizados por la organización.
+**No versionar datos**, perfiles, XML reales, credenciales. Probar un registro autorizado primero; Apps Script tiene cuotas/límites y los 100 se evaluarán después. ARIS y subida de resultados quedan pendientes.

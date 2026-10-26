@@ -1,15 +1,27 @@
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
-from config import cargar_config
+from config import DATA, cargar_config
 from workflow import ejecutar_desde_aris
-
+from modules.download_xmls import descargar_xmls
+from modules.chatgpt import corregir_primero
 
 def main():
-    parser = argparse.ArgumentParser(description="RDA XML: comenzar directamente en ARIS")
-    parser.add_argument("--xml", type=Path, required=True, help="Ruta local del XML de prueba")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--fase', choices=['download','chatgpt','aris'],required=True)
+    parser.add_argument('--archivo',type=Path)
     args = parser.parse_args()
-    resultado = ejecutar_desde_aris(args.xml, cargar_config())
-    raise SystemExit(0 if resultado["estado"] in ("inspeccionado", "importado") else 1)
-
-if __name__ == "__main__":
+    cfg = cargar_config()
+    if args.fase == 'download':
+        nombre = datetime.now(timezone.utc).strftime('registros_%Y%m%dT%H%M%S_%fZ.json')
+        descargar_xmls(cfg,DATA/'exportaciones'/nombre,DATA/'chrome_profile_sheets')
+    elif args.fase == 'chatgpt':
+        if not args.archivo:
+            parser.error('--archivo es obligatorio')
+        corregir_primero(args.archivo,cfg,DATA)
+    else:
+        if not args.archivo:
+            parser.error('--archivo es obligatorio')
+        ejecutar_desde_aris(args.archivo,cfg)
+if __name__ == '__main__':
     main()
