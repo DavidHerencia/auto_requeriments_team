@@ -64,7 +64,7 @@ def _xml_del_registro(registro: dict):
     return ruta
 
 
-def ejecutar_lote_aris(origen: Path, cfg: dict, limite=1):
+def ejecutar_lote_aris(origen: Path, cfg: dict, limite=1, reintentar_solicitud=None):
     """Checkpoint separado. Procesa solo registros cuya corrección está finalizada."""
     if limite not in (1, 2):
         raise ValueError('Primera prueba: --limite 1 o 2')
@@ -103,12 +103,53 @@ def ejecutar_lote_aris(origen: Path, cfg: dict, limite=1):
             })
         escribir_json(destino, trabajos)
 
+    if reintentar_solicitud:
+        if cfg.get('modo_aris') != 'ejecutar':
+            raise ValueError('El reintento explícito requiere modo_aris=ejecutar')
+        candidatos = [r for r in trabajos
+                      if r['id_solicitud'] == reintentar_solicitud]
+        if len(candidatos) != 1:
+            raise ValueError('No existe un registro corregido con esa solicitud')
+        elegido = candidatos[0]
+        previo = elegido.get('estado_aris', 'desconocido')
+        if previo == 'informe_completo':
+            raise ValueError('No reimportar un informe ya completado')
+        if previo not in ('requiere_revision', 'aris_iniciado', 'xml_rechazado',
+                          'preparacion_fallida', 'pendiente'):
+            raise ValueError(f'Estado no elegible para reintentar: {previo}')
+        print(f'Solicitud={reintentar_solicitud} estado={previo}; '
+              f'intentos previos={elegido.get("intentos_importacion", 0)}.')
+        print('ANTES: comprobar en ARIS/P00 Importación XML que el modelo '
+              'no se haya importado. De otro modo podrían generarse duplicados.')
+        respuesta = input(f'Escribe NO_IMPORTADO {reintentar_solicitud} '
+                          'para habilitar SOLO este registro: ')
+        if respuesta != f'NO_IMPORTADO {reintentar_solicitud}':
+            LOG.warning('Reintento no autorizado: checkpoint intacto')
+            return destino
+        marca = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
+        respaldo = destino.with_name(destino.stem + '_backup_' + marca + '.json')
+        respaldo.write_bytes(destino.read_bytes())
+        elegido.setdefault('historial_reintentos_aris', []).append({
+            'fecha_utc': datetime.now(timezone.utc).isoformat(),
+            'estado_previo': previo,
+            'intentos_anteriores': elegido.get('intentos_importacion', 0),
+            'confirmacion_manual': 'NO_IMPORTADO'
+        })
+        elegido.update(estado_aris='pendiente',
+                       motivo='Reintento manual confirmado: no importado en ARIS')
+        escribir_json(destino, trabajos)
+        LOG.warning('Reintento autorizado SOLO para %s; respaldo=%s',
+                    reintentar_solicitud, respaldo)
+
     # preparacion_fallida se asigna SOLO antes del lanzamiento del informe.
     # Es seguro repetir la selección; nunca reintentar aris_iniciado ni inciertos.
     elegibles = [
         r for r in trabajos
         if r.get('estado_aris') in ('pendiente', 'preparacion_fallida')
     ]
+    if reintentar_solicitud:
+        elegibles = [r for r in elegibles
+                     if r['id_solicitud'] == reintentar_solicitud]
     pendientes = elegibles[:limite]
     LOG.info('ARIS: elegidos %s de %s preparados/pendientes (corregidos=%s)',
              len(pendientes), len(elegibles), len(trabajos))

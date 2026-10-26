@@ -7,6 +7,8 @@ from unittest.mock import patch, MagicMock
 
 from modules.aris import clasificar_mensaje, validar_xml_aris, _arise_url, seleccionar_informe, _abrir_informes, _contexto_actual_informes, ArisNoConfirmado, adjuntar_xml
 import workflow
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
+from modules.aris import _opcion_auto
 
 
 class TestAris(unittest.TestCase):
@@ -122,17 +124,13 @@ class TestAris(unittest.TestCase):
     def test_contexto_distinto_en_preparar_no_bloquea_seleccion(self):
         pagina = MagicMock()
         panel = MagicMock()
-        etiqueta = MagicMock()
-        etiqueta.is_visible.return_value = True
-        etiqueta.inner_text.return_value = 'P00 Importación XML'
-        panel.locator.return_value.all.return_value = [etiqueta]
         pagina.locator.return_value = panel
+        pagina.wait_for_function.return_value.json_value.return_value = 'P00 Importación XML'
         cfg = {'modo_aris': 'preparar', 'aris_grupo_informes': '03 PROYECTOS'}
         with self.assertLogs('modules.aris', level='WARNING') as logs:
             actual = _contexto_actual_informes(pagina, cfg)
         self.assertEqual(actual, 'P00 Importación XML')
         self.assertIn('03 PROYECTOS', ''.join(logs.output))
-        self.assertIn('P00 Importación XML', ''.join(logs.output))
 
     def test_contexto_distinto_en_ejecutar_bloquea_importacion(self):
         pagina = MagicMock()
@@ -142,21 +140,45 @@ class TestAris(unittest.TestCase):
         etiqueta.inner_text.return_value = 'P00 Importación XML'
         panel.locator.return_value.all.return_value = [etiqueta]
         pagina.locator.return_value = panel
+        pagina.wait_for_function.side_effect = PlaywrightTimeout('expiro')
         cfg = {'modo_aris': 'ejecutar', 'aris_grupo_informes': '03 PROYECTOS'}
         with self.assertRaisesRegex(ArisNoConfirmado, 'Carpeta incorrecta'):
             _contexto_actual_informes(pagina, cfg)
 
-    def test_contexto_sin_configuracion_usa_grupo_observado(self):
+    def test_contexto_espera_grupo_real_y_no_placeholder(self):
         pagina = MagicMock()
         panel = MagicMock()
-        etiqueta = MagicMock()
-        etiqueta.is_visible.return_value = True
-        etiqueta.inner_text.return_value = '  03   PROYECTOS  '
-        panel.locator.return_value.all.return_value = [etiqueta]
         pagina.locator.return_value = panel
-        self.assertEqual(_contexto_actual_informes(pagina, {
-            'modo_aris': 'preparar'
-        }), '03 PROYECTOS')
+        pagina.wait_for_function.return_value.json_value.return_value = '03 PROYECTOS'
+        actual = _contexto_actual_informes(pagina, {
+            'modo_aris': 'ejecutar',
+            'aris_grupo_informes': '03 PROYECTOS',
+            'aris_timeout_carpeta_ms': 120000,
+        })
+        self.assertEqual(actual, '03 PROYECTOS')
+        self.assertEqual(pagina.wait_for_function.call_args.kwargs['arg'],
+                         '03 PROYECTOS')
+        self.assertEqual(pagina.wait_for_function.call_args.kwargs['timeout'],
+                         120000)
+
+    @patch('modules.aris._una_visible')
+    def test_popup_opciones_click_real_y_exacto(self, unico):
+        pagina = MagicMock()
+        modal_lista = MagicMock()
+        unico.return_value = modal_lista
+        combo = MagicMock()
+        combo.count.return_value = 1
+        aceptar = MagicMock()
+        aceptar.count.return_value = 1
+        aceptar.is_visible.return_value = True
+        aceptar.is_enabled.return_value = True
+        aceptar.get_attribute.return_value = 'false'
+        modal_lista.locator.side_effect = lambda sel: (
+            combo if 'DROP_OPCIONES' in sel else aceptar)
+        _opcion_auto(pagina, {'aris_tipo_importacion': 'Importación automática'})
+        self.assertEqual(pagina.wait_for_function.call_args.kwargs['arg'],
+                         'Importación automática')
+        aceptar.click.assert_called_once_with()
 
     @patch('modules.aris._esperar_transicion_archivo', return_value='opciones')
     @patch('modules.aris._aceptar')

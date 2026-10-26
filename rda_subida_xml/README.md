@@ -388,3 +388,29 @@ lanzó el informe y no se confirmó su resultado. El RDA no lo repetirá
 automáticamente. Comprobar en ARIS si hubo importación antes de
 reprocesarlo; para la siguiente prueba se puede utilizar el siguiente
 registro \`pendiente\`. No borrar ni editar a ciegas checkpoints.
+
+### Actualización de importación ARIS (26-10-2026)
+
+* **ARIS tarda en cargar**: el texto `Ninguna selección de informe válida disponible`
+  no es un nombre de carpeta. El robot espera que aparezca el contexto real;
+  si `aris_grupo_informes` está configurado en modo ejecutar, solo continúa
+  cuando coincide. El límite es `aris_timeout_carpeta_ms` (120000).
+  `aris_timeout_seleccion_ms` es 60000; ninguno introduce sleeps fijos.
+* **Popup de opciones**: se usa el modal visible
+  `[data-testid="SCRIPT_DIALOG"]`, combobox
+  `[data-testid="DROP_OPCIONES"] input[role="combobox"]` y
+  `.modal-footer a[aria-label="Aceptar"]`. Antes del clic se comprueba
+  mediante el valor DOM que el tipo sea exactamente `Importación automática`.
+* **Reintentar el MISMO XML en pruebas, sin borrar checkpoints**: verifica
+  primero en ARIS, dentro de `P00 Importación XML`, que ese modelo no se
+  haya importado. Ejemplo:
+  ```powershell
+  python app.py --fase aris --archivo data\exportaciones\procesados_registros_20261026T060440_012519Z.json --limite 1 --reintentar-solicitud S000000000800
+  ```
+  Se pide escribir `NO_IMPORTADO S000000000800` y después el usual
+  `IMPORTAR`. Crea backup del checkpoint, conserva los intentos previos
+  y habilita únicamente esa solicitud. Si hay dudas de si importó, **NO**
+  habilitar el reintento; podría duplicar modelos.
+* Los estados `requiere_revision` e `informe_completo` nunca se
+  reintentan implícitamente. La finalización del informe no sustituye
+  verificar la existencia del modelo en el repositorio.

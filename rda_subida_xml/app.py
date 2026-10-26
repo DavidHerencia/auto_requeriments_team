@@ -11,6 +11,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--fase', choices=['download','chatgpt','aris'], required=True)
     parser.add_argument('--archivo', type=Path)
+    parser.add_argument('--reintentar-solicitud', metavar='ID', help='ARIS: tras verificar ausencia del modelo en ARIS')
     parser.add_argument('--limite', type=int, choices=[1, 2], default=1,
                         help='Prueba de correccion: 1 o 2 registros pendientes')
     args = parser.parse_args()
@@ -34,7 +35,8 @@ def main():
         if not args.archivo:
             parser.error('--archivo obligatorio')
         if args.archivo.suffix.lower() == '.json':
-            ejecutar_lote_aris(args.archivo, cfg, limite=args.limite)
+            ejecutar_lote_aris(args.archivo, cfg, limite=args.limite,
+                               reintentar_solicitud=args.reintentar_solicitud)
         elif args.archivo.suffix.lower() == '.xml':
             ejecutar_desde_aris(args.archivo, cfg)
         else:

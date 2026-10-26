@@ -25,6 +25,7 @@
   "aris_tipo_importacion": "Importación automática",
   "aris_timeout_importacion_ms": 300000,
   "aris_grupo_informes": "",
-  "aris_timeout_seleccion_ms": 20000,
-  "aris_timeout_paso_ms": 45000
+  "aris_timeout_seleccion_ms": 60000,
+  "aris_timeout_paso_ms": 45000,
+  "aris_timeout_carpeta_ms": 120000
 }

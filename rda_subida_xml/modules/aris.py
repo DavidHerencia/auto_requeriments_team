@@ -108,43 +108,55 @@ def _abrir_informes(page, cfg):
 
 
 def _contexto_actual_informes(page, cfg):
-    """Obtiene el contexto visible del informe; nunca asume carpeta predeterminada.
-
-    En GWT puede existir un .label oculto y el texto tarda en actualizarse.
-    Solo se usa el panel visible y se registran los valores observados.
-    """
+    """Esperar la carpeta REAL, no el placeholder transitorio de ARIS."""
     panel = page.locator('.sidebar.reportSidebar .reportContextPanel')
-    try:
-        panel.wait_for(state='visible', timeout=int(cfg.get('aris_timeout_seleccion_ms', 20000)))
-        page.wait_for_function(
-            """() => [...document.querySelectorAll('.sidebar.reportSidebar .reportContextPanel .label')]
-                .some(el => {
-                    const box = el.getBoundingClientRect();
-                    return box.width > 0 && box.height > 0 && !!el.textContent.trim();
-                })""",
-            timeout=int(cfg.get('aris_timeout_seleccion_ms', 20000))
-        )
-    except PlaywrightTimeout as exc:
-        raise ArisNoConfirmado('No se pudo leer el grupo real del panel Informes') from exc
-
-    nombres = [' '.join(x.inner_text().split()) for x in panel.locator('.label').all() if x.is_visible()]
-    nombres = [x for x in nombres if x]
-    LOG.info('ARIS: contexto real del panel Informes: %s', nombres)
-    if len(nombres) != 1:
-        raise ArisNoConfirmado(f'Contexto Informes ambiguo: {len(nombres)} etiquetas visibles')
-    actual = nombres[0]
-
-    # Comprobación estricta SOLO cuando el operador fija el grupo localmente.
-    # En preparar registramos la discrepancia, para poder avanzar al desplegable
-    # sin realizar ninguna importación; en ejecutar nunca ignoramos un desacuerdo.
+    timeout = int(cfg.get('aris_timeout_carpeta_ms', 120000))
     esperado = ' '.join((cfg.get('aris_grupo_informes') or '').split())
-    if esperado and actual.casefold() != esperado.casefold():
-        if cfg.get('modo_aris') == 'ejecutar':
+    modo = cfg.get('modo_aris', 'inspeccionar')
+    panel.wait_for(state='visible', timeout=timeout)
+
+    script = """esperado => {
+        const panel = document.querySelector('.sidebar.reportSidebar .reportContextPanel');
+        if (!panel) return false;
+        const nombres = [...panel.querySelectorAll('.label')]
+            .filter(el => {
+                const r = el.getBoundingClientRect();
+                const css = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 &&
+                       css.visibility !== 'hidden' && css.display !== 'none';
+            })
+            .map(el => (el.textContent || '').replace(/\\s+/g, ' ').trim())
+            .filter(Boolean);
+        if (nombres.length !== 1) return false;
+        const actual = nombres[0];
+        if (/^ninguna selección de informe válida disponible$/i.test(actual))
+            return false;
+        if (esperado && actual.toLocaleLowerCase('es') !==
+                        esperado.toLocaleLowerCase('es'))
+            return false;
+        return actual;
+    }"""
+    # En preparar una discrepancia es advertencia, nunca una importación.
+    esperar = esperado if modo == 'ejecutar' else ''
+    try:
+        actual = page.wait_for_function(script, arg=esperar, timeout=timeout).json_value()
+    except PlaywrightTimeout as exc:
+        nombres = [' '.join(x.inner_text().split()) for x in panel.locator('.label').all()
+                   if x.is_visible()]
+        LOG.warning('ARIS: carpeta no lista después de %sms: actual=%s esperado=%r',
+                    timeout, nombres, esperado)
+        if esperado and modo == 'ejecutar' and nombres and nombres[0] != (
+                'Ninguna selección de informe válida disponible'):
             raise ArisNoConfirmado(
-                f'Carpeta incorrecta para importar: actual={actual!r}, configurada={esperado!r}'
-            )
-        LOG.warning('ARIS: carpeta esperada=%r, observada=%r; '
-                    'modo preparar: sin lanzar informe', esperado, actual)
+                f'Carpeta incorrecta o carga incompleta: actual={nombres!r}, esperada={esperado!r}'
+            ) from exc
+        raise ArisNoConfirmado(
+            'ARIS no confirmó la carpeta de Informes; no se lanzará el informe'
+        ) from exc
+    LOG.info('ARIS: contexto real del panel Informes: %r', actual)
+    if esperado and actual.casefold() != esperado.casefold():
+        LOG.warning('ARIS: carpeta esperada=%r, observada=%r; modo preparar, sin lanzar',
+                    esperado, actual)
     return actual
 
 
@@ -366,33 +378,52 @@ def _esperar_transicion_final_archivo(page, cfg):
 
 
 def _opcion_auto(page, cfg):
-    page.get_by_text('Opciones de importación', exact=True).wait_for(state='visible')
-    modal = _una_visible(page.locator(DIALOG).filter(
-        has=page.get_by_text('Opciones de importación', exact=True)
-    ), 'Modal de opciones de importación')
+    """Aceptar SOLO SCRIPT_DIALOG con importación automática.
+
+    GWT modifica la propiedad input.value sin atributo value en el HTML.
+    """
+    timeout = int(cfg.get('aris_timeout_paso_ms', 45000))
+    modal = page.locator(
+        'div[role="dialog"][aria-hidden="false"][data-testid="SCRIPT_DIALOG"]'
+    ).filter(has=page.get_by_text('Opciones de importación', exact=True))
+    try:
+        modal.wait_for(state='visible', timeout=timeout)
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado('No apareció el modal Opciones de importación') from exc
+    modal = _una_visible(modal, 'Modal de opciones de importación')
     expected = cfg.get('aris_tipo_importacion', 'Importación automática')
-    # Algunos dropdowns GWT presentan una etiqueta visible, otros un
-    # input con value. Ambos exigen igualdad exacta con la opción autorizada.
-    seleccion_confirmada = False
-    for control in modal.locator('input, select').all():
-        if not control.is_visible():
-            continue
-        try:
-            if control.input_value().strip() == expected:
-                seleccion_confirmada = True
-        except Exception:
-            continue
-    if not seleccion_confirmada:
-        for opcion in modal.get_by_text(expected, exact=True).all():
-            if opcion.is_visible():
-                seleccion_confirmada = True
-                break
-    if not seleccion_confirmada:
-        raise ArisNoConfirmado(
-            'No se pudo comprobar Importación automática; inspeccionar dropdown real'
+    combo = modal.locator('[data-testid="DROP_OPCIONES"] input[role="combobox"]')
+    if combo.count() != 1:
+        raise ArisNoConfirmado('No se encontró el combobox de tipo de importación')
+    try:
+        combo.wait_for(state='visible', timeout=timeout)
+        page.wait_for_function(
+            """valor => {
+                const d = document.querySelector(
+                    'div[role="dialog"][aria-hidden="false"][data-testid="SCRIPT_DIALOG"]'
+                );
+                const x = d && d.querySelector(
+                    '[data-testid="DROP_OPCIONES"] input[role="combobox"]'
+                );
+                return !!x && x.value.trim() === valor;
+            }""",
+            arg=expected,
+            timeout=timeout
         )
-    LOG.info('Tipo de importación confirmado: %s', expected)
-    _aceptar(modal, 'Aceptar opciones de importación')
+    except PlaywrightTimeout as exc:
+        LOG.warning('ARIS: tipo no confirmado; valor observado=%r',
+                    combo.input_value() if combo.is_visible() else '(oculto)')
+        raise ArisNoConfirmado(
+            'El tipo de importación no es exactamente el autorizado; sin confirmar'
+        ) from exc
+    LOG.info('ARIS: tipo de importación confirmado: %s', expected)
+    aceptar = modal.locator('.modal-footer a[aria-label="Aceptar"]')
+    if aceptar.count() != 1 or not aceptar.is_visible() or not aceptar.is_enabled() or (
+        aceptar.get_attribute('aria-disabled') == 'true'
+    ):
+        raise ArisNoConfirmado('Aceptar opciones: botón no visible o deshabilitado')
+    aceptar.click()
+    LOG.info('ARIS: Opciones de importación aceptadas por clic')
 
 
 def clasificar_mensaje(texto):
