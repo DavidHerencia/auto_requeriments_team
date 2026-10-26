@@ -103,9 +103,15 @@ def ejecutar_lote_aris(origen: Path, cfg: dict, limite=1):
             })
         escribir_json(destino, trabajos)
 
-    pendientes = [r for r in trabajos if r.get('estado_aris') == 'pendiente'][:limite]
-    LOG.info('ARIS: elegidos %s de %s pendientes (corregidos=%s)',
-             len(pendientes), sum(r.get('estado_aris') == 'pendiente' for r in trabajos), len(trabajos))
+    # preparacion_fallida se asigna SOLO antes del lanzamiento del informe.
+    # Es seguro repetir la selección; nunca reintentar aris_iniciado ni inciertos.
+    elegibles = [
+        r for r in trabajos
+        if r.get('estado_aris') in ('pendiente', 'preparacion_fallida')
+    ]
+    pendientes = elegibles[:limite]
+    LOG.info('ARIS: elegidos %s de %s preparados/pendientes (corregidos=%s)',
+             len(pendientes), len(elegibles), len(trabajos))
     for index, trabajo in enumerate(pendientes, 1):
         # Revalidar antes del intento para detectar modificaciones externas.
         xml = _xml_del_registro(trabajo)
@@ -140,6 +146,11 @@ def ejecutar_lote_aris(origen: Path, cfg: dict, limite=1):
                 trabajo.update(estado_aris='pendiente', motivo='Cancelado antes de lanzar informe')
             elif estado == 'inspeccionado':
                 trabajo.update(estado_aris='pendiente', motivo='Solo inspección; sin importar')
+            elif estado == 'preparado_para_lanzar':
+                trabajo.update(
+                    estado_aris='pendiente',
+                    motivo='Informe seleccionado por clic; sin lanzar ni importar'
+                )
             else:
                 trabajo.update(estado_aris='requiere_revision', motivo='Resultado ARIS incierto')
         except KeyboardInterrupt:

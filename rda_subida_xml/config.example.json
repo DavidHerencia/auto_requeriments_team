@@ -23,5 +23,7 @@
   "timeout_descarga_ms": 30000,
   "aris_report_name": "BBVA - Importar BPMN",
   "aris_tipo_importacion": "Importación automática",
-  "aris_timeout_importacion_ms": 300000
+  "aris_timeout_importacion_ms": 300000,
+  "aris_grupo_informes": "03 PROYECTOS",
+  "aris_timeout_seleccion_ms": 20000
 }

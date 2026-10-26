@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 LOG = logging.getLogger(__name__)
 REPORT = 'BBVA - Importar BPMN'
 REPORTS_TAB = 'li[data-testid="REPORT_REPOSITORY_BUTTON"] a[aria-label="Informes"]'
-REPORT_SELECTOR = 'div.reportActionPanel input[role="combobox"]'
+REPORT_SELECTOR = '.tcReportSelectReportDropDown input[role="combobox"]'
 LAUNCH = 'div.reportActionPanel a[aria-label="Lanzar"]'
 DIALOG = 'div[role="dialog"][aria-hidden="false"]'
 FILE_INPUT = 'input[type="file"][name="fileUpload"][accept*=".xml"]'
@@ -52,24 +52,128 @@ def _una_visible(locator, descripcion):
     return candidatas[0]
 
 
-def seleccionar_informe(page, cfg):
-    """Usa el informe EXACTO; no lo escribe ni elige una coincidencia parcial."""
-    report = cfg.get('aris_report_name', REPORT)
-    combo = page.locator(REPORT_SELECTOR)
-    # El usuario puede haber dejado abierta la pestaña Informes en la sesión.
-    if not (combo.count() and combo.first.is_visible()):
-        page.locator(REPORTS_TAB).click()
-    combo.wait_for(state='visible')
-    if combo.count() != 1:
-        raise ArisNoConfirmado('No se encontró un único selector de informes')
+def _opcion_informe_en_popup(elemento):
+    """Excluir resultados históricos del informe; aceptar solo menú desplegado."""
+    return elemento.evaluate("""el => {
+        if (el.closest('.reportPanel-reports-list, .finished-report-item-row, .scrollable-report-panel')) {
+            return false;
+        }
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 &&
+               style.visibility !== 'hidden' && style.display !== 'none';
+    }""")
 
-    # El campo es un combobox GWT. Seleccionar con click, NO con fill().
-    combo.click()
-    _una_visible(page.get_by_text(report, exact=True), 'Opción de informe').click()
-    actual = combo.input_value().strip()
-    if actual != report:
-        raise ArisNoConfirmado('El campo no confirmó el informe exacto')
-    LOG.info('Informe ARIS seleccionado: %s', report)
+
+def _abrir_informes(page, cfg):
+    """ARIS GWT conserva el panel en el DOM incluso cuando está oculto.
+
+    La señal de apertura es VISIBILIDAD REAL del panel e input,
+    NO su existencia ni el atributo 'active' por sí solo.
+    """
+    panel = page.locator('.sidebar.reportSidebar')
+    combo = page.locator(REPORT_SELECTOR)
+    tab = page.locator('li[data-testid="REPORT_REPOSITORY_BUTTON"]')
+    timeout = int(cfg.get('aris_timeout_seleccion_ms', 20000))
+    try:
+        tab.locator('a[aria-label="Informes"]').wait_for(state='visible', timeout=timeout)
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado('No apareció el botón Informes del repositorio') from exc
+    if tab.count() != 1:
+        raise ArisNoConfirmado('Hay más de una pestaña Informes')
+    # El campo puede crearse únicamente DESPUÉS del clic en Informes.
+    if panel.count() and panel.is_visible() and combo.count() and combo.is_visible():
+        LOG.info('ARIS: panel Informes ya visible; no alternar pestaña activa')
+        return combo
+
+    # Es normal encontrar el input en el DOM aunque el panel esté oculto.
+    # Si la pestaña aún no está activa, UN clic abre el panel.
+    if 'active' not in (tab.get_attribute('class') or '').split():
+        LOG.info('ARIS: abriendo Informes con clic en el icono de barras')
+        tab.locator('a[aria-label="Informes"]').click()
+    else:
+        LOG.info('ARIS: pestaña marcada activa; esperando que aparezca el panel')
+
+    try:
+        panel.wait_for(state='visible', timeout=timeout)
+        combo.wait_for(state='visible', timeout=timeout)
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado(
+            'Panel Informes oculto: no reintento el clic sobre una pestaña posiblemente activa'
+        ) from exc
+    if combo.count() != 1:
+        raise ArisNoConfirmado('Selector de informes ambiguo tras abrir el panel')
+    LOG.info('ARIS: panel Informes visible y selector listo')
+    return combo
+
+
+def seleccionar_informe(page, cfg):
+    """Seleccionar por clic la opción real del desplegable, NO el historial."""
+    report = cfg.get('aris_report_name', REPORT)
+    combo = _abrir_informes(page, cfg)
+    contexto = page.locator('.sidebar.reportSidebar .reportContextPanel .label')
+    carpeta = cfg.get('aris_grupo_informes', '03 PROYECTOS').strip()
+    if contexto.count() != 1 or contexto.inner_text().strip() != carpeta:
+        raise ArisNoConfirmado('La carpeta del panel Informes no coincide con aris_grupo_informes')
+    LOG.info('ARIS: carpeta de informes confirmada: %s', carpeta)
+
+    # GWT: abrir la flecha; el historial inferior puede mostrar el MISMO
+    # nombre, pero jamás debemos pulsar un informe ya ejecutado.
+    desplegable = page.locator(
+        '.tcReportSelectReportDropDown a[aria-label="dropdown-toggle"]'
+    )
+    if desplegable.count() != 1 or not desplegable.is_visible():
+        raise ArisNoConfirmado('No se encontró el botón desplegable del informe')
+    desplegable.click()
+    LOG.info('ARIS: desplegable Informes abierto; buscando opción exacta')
+
+    def coincidencias():
+        candidatas = page.get_by_text(report, exact=True).all()
+        visibles = [e for e in candidatas if e.is_visible()]
+        menu = [e for e in visibles if _opcion_informe_en_popup(e)]
+        return candidatas, visibles, menu
+
+    # Esperar una OPCIÓN NUEVA real en el DOM, no que transcurran segundos.
+    timeout = int(cfg.get('aris_timeout_seleccion_ms', 20000))
+    try:
+        page.wait_for_function(
+            """nombre => Array.from(document.querySelectorAll('body *')).some(el => {
+                if (el.children.length || (el.textContent || '').trim() !== nombre) return false;
+                if (el.closest('.reportPanel-reports-list, .finished-report-item-row, .scrollable-report-panel')) return false;
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+            })""", arg=report, timeout=timeout
+        )
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado(
+            'No apareció la opción en el desplegable; revisar DOM abierto'
+        ) from exc
+
+    todas, visibles, menu = coincidencias()
+    LOG.info(
+        'ARIS: coincidencias del nombre exacto: total=%s visibles=%s fuera_del_historial=%s',
+        len(todas), len(visibles), len(menu)
+    )
+    if len(menu) != 1:
+        raise ArisNoConfirmado(
+            f'Opción del desplegable ambigua; fuera del historial={len(menu)}'
+        )
+    menu[0].click()
+    # La elección debe quedar en el combobox, no solo cerrar el popup.
+    try:
+        page.wait_for_function(
+            """expected => {
+                const x = document.querySelector(
+                    'div.reportActionPanel .tcReportSelectReportDropDown input[role="combobox"]'
+                );
+                return !!x && x.value.trim() === expected;
+            }""",
+            arg=report,
+            timeout=timeout
+        )
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado('El informe no quedó seleccionado en el campo') from exc
+    LOG.info('ARIS: informe exacto seleccionado por clic: %s', report)
 
 
 def _dialogo_con(page, selector):
@@ -183,8 +287,8 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
     xml = validar_xml_aris(xml)
     url = _arise_url(cfg)
     modo = cfg.get('modo_aris', 'inspeccionar')
-    if modo not in ('inspeccionar', 'ejecutar'):
-        raise ValueError('modo_aris debe ser inspeccionar o ejecutar')
+    if modo not in ('inspeccionar', 'preparar', 'ejecutar'):
+        raise ValueError('modo_aris debe ser inspeccionar, preparar o ejecutar')
     perfil.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
@@ -200,6 +304,10 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
                 input('Inspecciona ARIS; Enter para cerrar sin importar... ')
                 return {'estado': 'inspeccionado', 'importado': False}
             seleccionar_informe(page, cfg)
+            if modo == 'preparar':
+                LOG.info('ARIS: preparación validada; no se lanzó ningún informe')
+                input('Informe seleccionado. Inspecciona la pantalla; Enter para cerrar SIN lanzar... ')
+                return {'estado': 'preparado_para_lanzar', 'importado': False}
             confirmacion = input(
                 f'IMPORTACIÓN REAL en ARIS. Archivo: {xml.name}. '
                 'Escribe IMPORTAR para lanzar el informe: '
@@ -218,5 +326,13 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
             if cfg.get('mantener_chrome_abierto', True):
                 input('Revisa el resultado en Chrome. Enter para cerrar... ')
             return resultado
+        except Exception:
+            if cfg.get('mantener_chrome_abierto', True):
+                LOG.warning('ARIS: fallo de navegación; Chrome queda abierto para revisar DOM')
+                try:
+                    input('Revisa la pantalla de ARIS; Enter para cerrar y guardar error... ')
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            raise
         finally:
             ctx.close()

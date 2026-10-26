@@ -275,3 +275,61 @@ python app.py --fase aris --archivo data\corregidos\archivo - Detalle.xml
 (usa comillas cuando el nombre contiene espacios). En modo ejecutar se hace una copia no sobreescrita a \`data/xml\`. El JSON es la entrada recomendada para lotes.
 
 **Qué queda por verificar en tu navegador:** DOM del menú desplegable al seleccionar el informe (el HTML de las opciones no apareció en las capturas), estructura del primer botón Aceptar y DOM del selector de tipo automático. El código se detiene si esos pasos no se identifican de forma inequívoca. Se preserva el modal de resultado para inspeccionarlo manualmente antes de cerrar Chrome. El reintento por GPT tras un error explícito se conectará cuando validemos una importación exitosa y una rechazada, sin automatizar reenvíos a ciegas.
+
+
+## ARIS: selector del informe corregido (HTML real, 26-10-2026)
+
+Los intentos de prueba S000000000799 y S000000000800 fallaron ANTES
+del botón Lanzar. Las trazas de \`seleccionar_informe\` muestran:
+- Dos coincidencias visibles con texto \`BBVA - Importar BPMN\`:
+  una opción del desplegable y una entrada de ejecución en el historial
+  \`.reportPanel-reports-list .finished-report-item-row\`.
+- El \`input[role=combobox]\` puede existir pero permanecer **oculto**
+  cuando la pestaña Informes aún no está abierta.
+
+La corrección valida visibilidad real del panel
+\`.sidebar.reportSidebar\` y del \`.tcReportSelectReportDropDown input\`;
+solo hace clic en la pestaña \`REPORT_REPOSITORY_BUTTON\` si no figura
+activa, evitando el efecto toggle que la puede cerrar. Para seleccionar
+informe: clic en \`.tcReportSelectReportDropDown a[aria-label="dropdown-toggle"]\`,
+buscar texto exacto en la lista desplegada **excluyendo completamente
+el historial de informes**, clic en la opción visible y verificar que
+el combobox contiene exactamente el nombre esperado. Si hay 0 o 2
+opciones utilizables se detiene: no hace clic al azar.
+
+\`aris_grupo_informes\` (predeterminado \`03 PROYECTOS\`) valida que el
+contexto del panel sea la carpeta autorizada; ajustar localmente solo
+si cambia intencionalmente la carpeta. \`aris_timeout_seleccion_ms\` vale
+20000; es máximo de seguridad, no una espera fija. Si falla antes de
+importar, el navegador puede quedar abierto hasta Enter para inspección.
+
+### Validación recomendada sin efectos
+
+Cambiar solo este campo de \`config.local.json\`:
+
+\`\`\`json
+"modo_aris": "preparar"
+\`\`\`
+
+Y ejecutar, con el JSON ya procesado:
+
+\`\`\`powershell
+python app.py --fase aris --archivo data\exportaciones\procesados_registros_20261026T060440_012519Z.json --limite 1
+\`\`\`
+
+\`preparar\` abre la carpeta de ARIS, abre Informes si procede,
+selecciona el informe mediante clic y **se detiene antes de Lanzar**.
+Conserva Chrome para revisión y registra
+\`estado_aris=pendiente\` (sin incrementar intentos de importación).
+
+Los checkpoints anteriores con \`preparacion_fallida\` se vuelven a
+elegir para este paso; representan fallos **anteriores al lanzamiento**,
+sin importación realizada. Nunca se reintenta automáticamente un registro
+\`aris_iniciado\`, \`requiere_revision\`, \`informe_completo\` o
+\`xml_rechazado\`. No borrar el checkpoint ni volver a generar XML.
+
+Cuando funcione el paso de selección, cambiar a
+\`"modo_aris": "ejecutar"\` para la prueba controlada real y confirmar
+\`IMPORTAR\` por consola. Si ARIS cambia el DOM del menú desplegado,
+inspeccionar el popup abierto; no inferir el selector de las entradas
+históricas.
