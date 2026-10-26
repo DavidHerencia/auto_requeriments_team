@@ -160,64 +160,102 @@ def _esperar_adjunto(page, xml_path, config):
     raise ResultadoIncierto('El adjunto no termino su carga visible')
 
 
-def _nuevo_turno(page, config, anteriores, usuarios_antes):
-    """Espera la respuesta NUEVA con señales observadas en el prototipo.
+def _marcadores_generacion(page, turno):
+    """Observa estado del TURNO ACTUAL y controles activos, sin leer contenido."""
+    estado = turno.evaluate(
+        """el => el.closest('[data-turn-state]')?.getAttribute('data-turn-state')
+                   || el.getAttribute('data-turn-state') || ''"""
+    )
+    stop = page.locator('[data-testid="stop-button"]:visible').count() > 0
+    if not stop:
+        stop = page.get_by_role(
+            'button', name=re.compile(r'detener|stop|parar|cancel generation', re.I)
+        ).count() > 0
+    boton = page.locator(ENVIAR)
+    enviar_listo = boton.count() == 1 and boton.first.is_visible() and boton.first.is_enabled()
+    return estado == 'complete', stop, enviar_listo
 
-    Prefiere data-turn-state=complete y aplica estabilidad del texto. Si el
-    botón Detener no se llegó a ver, usa una espera de estabilidad mayor.
+
+def _puede_cerrar_respuesta(completo, generando, generacion_vista, enviar_listo):
+    """Solo eventos de finalizacion: nunca basarse en segundos de texto estable."""
+    return not generando and (completo or (generacion_vista and enviar_listo))
+
+
+def _nuevo_turno(page, config, anteriores, usuarios_antes):
+    """Respuesta nueva + finalizacion observable + DOM asentado.
+
+    El conteo de turnos de usuario NO es condicion necesaria: la version
+    actual de HERO puede mostrar el mensaje sin data-turn-key='...:user'.
     """
     sel = _selector(config, 'gpt_respuesta_selector', TURNO)
     limite = time.monotonic() + int(config.get('timeout_respuesta_ms', 480000)) / 1000
-    texto_previo = None
-    quieto_desde = None
+    visto_respuesta = False
     generacion_vista = False
+    estado_anterior = None
+    firma_anterior = None
+    lecturas_finales_iguales = 0
     ultimo_log = 0
+
     while time.monotonic() < limite:
-        usuarios = page.locator('[data-turn-key$=":user"]').count()
-        usuario_nuevo = usuarios > usuarios_antes
         respuestas = page.locator(sel)
         cantidad = respuestas.count()
-        generando = page.get_by_role(
-            'button', name=re.compile(r'detener|stop|parar|cancel generation', re.I)
-        ).count() > 0
-        generacion_vista |= generando
-
         if cantidad > anteriores + 1:
-            raise ResultadoIncierto('Multiples turnos nuevos de asistente: no se sabe cual capturar')
-        if cantidad == anteriores + 1 and usuario_nuevo:
+            raise ResultadoIncierto('Multiples respuestas nuevas: captura ambigua')
+
+        if cantidad == anteriores + 1:
             turno = respuestas.nth(anteriores)
+            if not visto_respuesta:
+                LOG.info('Turno NUEVO de asistente detectado: mensaje enviado')
+                visto_respuesta = True
             try:
-                texto = turno.inner_text(timeout=1200).strip()
-                estado = turno.evaluate("el => el.closest('[data-turn-state]')?.getAttribute('data-turn-state') || ''")
-                completo = estado == 'complete'
-            except Exception:
-                texto, completo = '', False
+                completo, generando, enviar_listo = _marcadores_generacion(page, turno)
+                generacion_vista |= generando
+                estado = (completo, generando, enviar_listo)
+                if estado != estado_anterior:
+                    LOG.info('Estado generacion: turno_complete=%s stop_visible=%s enviar_listo=%s',
+                             completo, generando, enviar_listo)
+                    estado_anterior = estado
 
-            if not texto or generando or texto != texto_previo:
-                texto_previo = texto
-                quieto_desde = None
-            else:
-                quieto_desde = quieto_desde or time.monotonic()
+                if _puede_cerrar_respuesta(completo, generando, generacion_vista, enviar_listo):
+                    # El evento (turno completo o reaparicion de Enviar tras
+                    # detenerse la generacion) dispara el cierre. Dos lecturas
+                    # iguales comprueban que termino el renderizado del DOM.
+                    texto = turno.inner_text(timeout=3000).strip()
+                    codigo = turno.locator('pre code').all_text_contents()
+                    firma = (texto, tuple(codigo))
+                    if firma == firma_anterior:
+                        lecturas_finales_iguales += 1
+                    else:
+                        firma_anterior = firma
+                        lecturas_finales_iguales = 0
 
-            if quieto_desde:
-                quietud = time.monotonic() - quieto_desde
-                if re.search(
-                    r'No se ha podido cargar esta respuesta|Something went wrong|Unable to load this response',
-                    texto, re.I
-                ) and quietud >= 2:
-                    raise ResultadoIncierto('ChatGPT muestra error de carga de respuesta')
-                espera = 2 if completo else (3 if generacion_vista else 10)
-                if not generando and quietud >= espera:
-                    LOG.info('Respuesta estable: caracteres=%d complete=%s generacion_observada=%s',
-                             len(texto), completo, generacion_vista)
-                    return turno
+                    if lecturas_finales_iguales >= 1 and texto:
+                        if re.search(
+                            r'No se ha podido cargar esta respuesta|Something went wrong|Unable to load this response',
+                            texto, re.I
+                        ):
+                            raise ResultadoIncierto('ChatGPT muestra error de carga de respuesta')
+                        LOG.info('Respuesta COMPLETA: caracteres=%s bloques_codigo=%s',
+                                 len(texto), len(codigo))
+                        return turno
+                else:
+                    firma_anterior = None
+                    lecturas_finales_iguales = 0
+            except ResultadoIncierto:
+                raise
+            except Exception as exc:
+                LOG.debug('Turno en renderizado: tipo=%s', type(exc).__name__)
 
         if time.monotonic() - ultimo_log >= 10:
-            LOG.info('Esperando respuesta: turno_usuario_nuevo=%s turno_asistente_nuevo=%s generando=%s',
-                     usuario_nuevo, max(0, cantidad - anteriores), generando)
+            usuarios = page.locator('[data-turn-key$=":user"]').count()
+            LOG.info(
+                'Esperando fin de generacion: respuesta_nueva=%s user_turns=%s/%s generacion_vista=%s',
+                visto_respuesta, usuarios, usuarios_antes, generacion_vista
+            )
             ultimo_log = time.monotonic()
-        page.wait_for_timeout(500)
-    raise ResultadoIncierto('No se pudo confirmar respuesta terminada; no reenviar')
+        page.wait_for_timeout(350)
+
+    raise ResultadoIncierto('Timeout sin confirmacion de respuesta completa; no reenviar')
 
 
 def instalar_diagnostico(page):
@@ -261,42 +299,24 @@ def registrar_flags_chrome(contexto):
 
 
 def _enviar(page, config, prompt, archivo=None):
-    """Enviar una sola vez con Enter (flujo validado en el prototipo).
-
-    Confirmar por incremento de turnos de usuario; no confundir editor vacio
-    con un mensaje enviado. Ante incertidumbre, no volver a pulsar Enter.
-    """
+    """Un solo Enter como en el prototipo; respuesta nueva confirma el envio."""
     editor = _esperar_editor(page, config)
     resp = _selector(config, 'gpt_respuesta_selector', TURNO)
     anteriores = page.locator(resp).count()
     usuarios = page.locator('[data-turn-key$=":user"]').count()
-
     if archivo:
         _esperar_adjunto(page, archivo, config)
     editor.fill(prompt)
     LOG.info('Prompt escrito; caracteres=%s adjunto=%s', len(prompt), bool(archivo))
-
-    # Antes se esperaba el selector send-button y se agotaba su timeout.
-    # El prototipo probado enviaba pulsando Enter sobre el editor.
     try:
         editor.press('Enter', timeout=20000)
     except Exception as exc:
-        LOG.error('Fallo pulsacion Enter: tipo=%s; envio incierto', type(exc).__name__)
-        raise ResultadoIncierto('Error al pulsar Enter; no reenviar automaticamente') from exc
-    LOG.info('Enter pulsado una sola vez; esperando confirmacion de envio')
-
-    try:
-        page.wait_for_function(
-            """(previo) => document.querySelectorAll('[data-turn-key$=":user"]').length > previo""",
-            arg=usuarios,
-            timeout=int(config.get('timeout_envio_ms', 30000))
-        )
-    except PlaywrightTimeout as exc:
-        # Puede ser fallo de red o DOM cambiado, nunca emitir otro Enter.
-        LOG.warning('Nuevo turno de usuario no observado; envio incierto, no reenvio')
-        raise ResultadoIncierto('Envio no confirmado tras Enter; requiere revision') from exc
-
-    LOG.info('Nuevo turno de usuario detectado: envio confirmado en DOM')
+        LOG.error('Fallo Enter; envio incierto: tipo=%s', type(exc).__name__)
+        raise ResultadoIncierto('No se pudo pulsar Enter de forma verificable') from exc
+    LOG.info('Enter pulsado una sola vez; observando respuesta NUEVA')
+    # No bloquear esperando [data-turn-key$=":user"]: en HERO el mensaje
+    # visible se envia aunque ese atributo no aparezca. La respuesta nueva
+    # constituye la confirmacion del envio.
     return _nuevo_turno(page, config, anteriores, usuarios)
 
 

@@ -74,3 +74,27 @@ el siguiente ensayo seleccionará otro registro pendiente. Antes de reenviar cua
 de ellos hay que comprobar manualmente la conversación correspondiente.
 Los 403 observados son independientes del error del botón: pueden indicar
 un rechazo de alguna solicitud del servicio, sin que sepamos cuál sin más evidencia.
+
+## Corrección del detector para XML largo (26 de octubre de 2026)
+
+En HERO se observó **mensaje enviado y XML visible**, pero el detector anterior
+exigía `[data-turn-key$=":user"]` y agotaba 30 segundos, aunque el turno del
+asistente ya existía. Esa señal no es obligatoria en esta interfaz: ahora la
+respuesta **nueva** de asistente confirma el envío.
+
+La finalización depende de **eventos**, no de tiempo transcurrido:
+- `data-turn-state="complete"` dentro del turno actual y sin botón Detener; o
+- Se observó el botón Detener, desapareció y volvió a estar disponible Enviar.
+
+Tras observar uno de esos eventos, se comprueban dos lecturas consecutivas
+idénticas del DOM, como precaución contra actualizaciones finales de renderizado.
+Los 480 segundos configurables son **solo un timeout máximo** cuando esos eventos
+no llegan. No se capturará XML parcial deliberadamente.
+
+En pantalla, el XML coloreado de HERO se obtiene de `pre code` mediante
+`textContent` (sin usar portapapeles). Solo entonces se valida el XML, se
+modifica `LanePrincipal` y se guarda el archivo terminado.
+
+**No borrar el checkpoint existente.** Los registros marcados
+`requiere_revision` por el antiguo detector pudieron responder correctamente
+en ChatGPT. Revisarlos o recuperarlos sin volver a enviar el mismo XML a ciegas.
