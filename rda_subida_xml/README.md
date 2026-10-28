@@ -448,3 +448,63 @@ pestañas anteriores o URLs de otros sitios. Si una pestaña no se puede
 identificar como propia, la deja abierta y registra el aviso. No se
 han implementado aún copiar/pegar/mover/renombrar ni un segundo informe;
 esas operaciones irán en otro módulo.
+
+## Pipeline completo (prueba controlada, octubre 2026)
+
+El archivo \`app.py\` incluye \`--fase pipeline\` para ejecutar en serie:
+
+1. Extraer el Sheet completo por el puente Apps Script y generar JSON validado.
+2. Seleccionar los primeros \`--limite\` registros o solo los \`--ids\` indicados. Crear un lote inmutable.
+3. Pasar cada XML **original** por el GPT HERO con \`@BPMN ARIS XML Repair\`.
+4. Al concluir la primera vuelta, reintentar **una sola vez** los XML sin salida válida o con postprocesamiento fallido. No reenvía un turno de resultado incierto.
+5. Importar en ARIS todos los XML con \`correccion_finalizada\`, de forma secuencial y reutilizando la sesión. El clic final en \`Aceptar\` se confirma por desaparición del popup. Si el repositorio no está listo para el siguiente archivo, se vuelve a abrir la carpeta autorizada sin duplicar el informe anterior.
+6. Solo para los XML **explícitamente rechazados** por ARIS, volver a corregir el **XML original** por GPT, con un reintento GPT adicional si falla esa nueva vuelta; importar la nueva versión una única segunda vez. Nunca existe tercer intento ARIS.
+
+Ejemplo de **cuatro** registros determinados, después de validar que ninguno esté importado:
+
+\`\`\`powershell
+git pull origin main
+python -m unittest discover -s tests -v
+python app.py --fase pipeline --limite 4 --ids S000000000001 S000000000002 S000000000003 S000000000004
+\`\`\`
+
+Los identificadores anteriores son **ejemplos**, deben reemplazarse por cuatro
+solicitudes reales y no importadas. Sin \`--ids\` se usan los primeros cuatro
+de la exportación; es preferible especificarlos durante la prueba.
+
+La fase exige \`modo_chatgpt=ejecutar\`, \`modo_aris=ejecutar\`, las URLs
+configuradas **solo en** \`config.local.json\` y
+\`aris_grupo_informes\` correcto. Tras descargar muestra los IDs y requiere
+confirmación explícita \`EJECUTAR 4\` antes de enviar datos o importar.
+
+También puede iniciarse desde un JSON de exportación local para evitar una
+nueva descarga (debe contener **solo** los campos \`id_solicitud\`, \`id_n5\`,
+\`nombre_proceso\`, \`xml\`):
+
+\`\`\`powershell
+python app.py --fase pipeline --archivo data\exportaciones\registros_EXISTENTE.json --limite 4 --ids ID1 ID2 ID3 ID4
+\`\`\`
+
+**Reporte:** \`data/reportes/pipeline_lote_*.json\` contiene resumen
+\`total\`, \`pasaron\`, \`no_pasaron\`, \`pendientes\`; cada registro incluye
+\`estado_final\`, \`etapa_fallo\`, \`motivo\`, \`intentos_gpt\` y
+\`intentos_aris\`. Se escribe atómicamente tras cada registro, sin incluir
+el XML completo. Todos los XML originales/capturados/corregidos, perfil de
+Chrome, logs y configuraciones locales permanecen en \`data/\` o rutas
+excluidas por \`.gitignore\`.
+
+**Seguridad:** \`informe_completo\` significa que ARIS terminó el informe;
+no prueba por sí solo que el modelo ya está en la carpeta final. Si el
+informe se lanzó y su resultado no pudo confirmarse, el registro pasa a
+\`requiere_revision\`: nunca se reimporta automáticamente. Los reintentos
+automáticos de ARIS se habilitan solo ante rechazo explícito, y cada
+pasada usa un archivo XML nuevo sin sobrescribir el anterior. Si se pierde
+la sesión antes de operar, el programa pide autenticarse en Chrome y
+escribir \`CONTINUAR\`. Si la sesión se corta **después** del lanzamiento,
+se conserva el estado incierto para comprobación manual, porque repetir
+podría crear duplicados.
+
+**Alcance:** este pipeline termina tras importar y cerrar los diálogos.
+Mover, copiar, renombrar carpetas y lanzar el informe de roles será un
+módulo posterior, no implementado aquí. GPT/Chrome se procesan de forma
+secuencial por seguridad; la paralelización se evaluará después.

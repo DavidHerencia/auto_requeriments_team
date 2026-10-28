@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from modules.session import esperar_sesion
 
 LOG = logging.getLogger(__name__)
 REPORT = 'BBVA - Importar BPMN'
@@ -462,61 +463,81 @@ def clasificar_mensaje(texto):
 
 
 def _resultado(page, cfg):
-    """Espera modal terminal por evento del DOM; timeout solo como máximo."""
+    """Esperar el modal TERMINAL real de ARIS; aceptarlo exactamente una vez.
+
+    El body validado contiene div.message-dialog, #gwt-debug-dialog-message
+    y un enlace a[role=button][aria-label=Aceptar] en .modal-footer.
+    """
     timeout = int(cfg.get('aris_timeout_importacion_ms', 300000))
+    selector = 'div.message-dialog[role="dialog"][aria-hidden="false"]'
+    LOG.info('ARIS: esperando popup terminal BBVA - Importar BPMN')
     try:
         page.wait_for_function(
-            """() => Array.from(document.querySelectorAll('div[role="dialog"][aria-hidden="false"]'))
-                .some(d => {
-                    const t = (d.textContent || '').replace(/\s+/g, ' ');
-                    return t.includes('El informe está completo') ||
-                           t.includes('El fichero seleccionado no es válido');
-                })""",
+            """() => [...document.querySelectorAll(
+                'div.message-dialog[role="dialog"][aria-hidden="false"]'
+            )].some(d => {
+                const msg = d.querySelector('#gwt-debug-dialog-message');
+                const t = msg && (msg.textContent || '').trim();
+                return t && (
+                    t.includes('El informe está completo') ||
+                    t.includes('El fichero seleccionado no es válido')
+                );
+            })""",
             timeout=timeout
         )
     except PlaywrightTimeout as exc:
-        raise ArisNoConfirmado('No se observó modal de éxito o rechazo; verificar manualmente') from exc
+        raise ArisNoConfirmado(
+            'ARIS no mostró popup final confirmable; no repetir importación'
+        ) from exc
 
-    dialogs = page.locator(DIALOG)
     encontrados = []
-    for dlg in dialogs.all():
-        if dlg.is_visible():
-            estado = clasificar_mensaje(dlg.inner_text())
-            if estado != 'requiere_revision':
-                encontrados.append((estado, dlg))
+    for dialogo in page.locator(selector).all():
+        if not dialogo.is_visible():
+            continue
+        mensaje = dialogo.locator('#gwt-debug-dialog-message')
+        if mensaje.count() != 1:
+            continue
+        estado = clasificar_mensaje(mensaje.inner_text())
+        if estado in ('informe_completo', 'xml_rechazado'):
+            encontrados.append((estado, dialogo))
     if len(encontrados) != 1:
-        raise ArisNoConfirmado('Resultado ARIS ambiguo, no se reenviará XML')
-    estado, dlg = encontrados[0]
-    if estado == 'xml_rechazado':
-        LOG.warning('ARIS rechazó el archivo XML (mensaje genérico)')
-    else:
-        LOG.info('ARIS confirmó finalización del informe de importación')
-    _cerrar_popup_resultado(dlg, estado, cfg)
-    return {'estado': estado, 'importado': None if estado == 'informe_completo' else False,
-            'mensaje': FILE_ERROR if estado == 'xml_rechazado' else REPORT_DONE}
+        raise ArisNoConfirmado('Resultado final ambiguo; sin nuevo envío')
+    estado, dialogo = encontrados[0]
+    LOG.info('ARIS: mensaje final reconocido: %s; cerrando popup', estado)
+    _cerrar_popup_resultado(dialogo, estado, cfg)
+    LOG.info('ARIS: modal terminal cerrado; resultado=%s', estado)
+    return {
+        'estado': estado,
+        'importado': None if estado == 'informe_completo' else False,
+        'mensaje': FILE_ERROR if estado == 'xml_rechazado' else REPORT_DONE
+    }
 
 
 def _cerrar_popup_resultado(dialogo, estado, cfg):
-    """Cerrar el mensaje terminal ya clasificado (éxito o rechazo) una sola vez.
-
-    El HTML real usa un message-dialog y un enlace Aceptar en modal-footer.
-    Se vuelve a comprobar el estado antes del clic para no aceptar otro modal.
-    """
-    if not dialogo.is_visible() or clasificar_mensaje(dialogo.inner_text()) != estado:
-        raise ArisNoConfirmado('El popup final cambió antes de aceptar; revisar ARIS')
-    aceptar = dialogo.locator('.modal-footer a[aria-label="Aceptar"]')
-    if aceptar.count() != 1 or not aceptar.is_visible() or not aceptar.is_enabled() or (
-        aceptar.get_attribute('aria-disabled') == 'true'
+    mensaje = dialogo.locator('#gwt-debug-dialog-message')
+    if (
+        not dialogo.is_visible() or mensaje.count() != 1
+        or clasificar_mensaje(mensaje.inner_text()) != estado
     ):
-        raise ArisNoConfirmado('Aceptar final ARIS no disponible; revisar resultado')
+        raise ArisNoConfirmado('El popup terminal cambió antes de Aceptar')
+    aceptar = dialogo.locator(
+        '.modal-footer a[role="button"][aria-label="Aceptar"]'
+    )
+    if (
+        aceptar.count() != 1 or not aceptar.is_visible()
+        or not aceptar.is_enabled()
+        or aceptar.get_attribute('aria-disabled') == 'true'
+    ):
+        raise ArisNoConfirmado('Botón Aceptar del resultado no habilitado')
+    LOG.info('ARIS: pulsando Aceptar del popup terminal, estado=%s', estado)
     aceptar.click()
     try:
         dialogo.wait_for(
             state='hidden', timeout=int(cfg.get('aris_timeout_paso_ms', 45000))
         )
     except PlaywrightTimeout as exc:
-        raise ArisNoConfirmado('ARIS no cerró el popup final tras Aceptar') from exc
-    LOG.info('ARIS: popup final de %s cerrado mediante Aceptar', estado)
+        raise ArisNoConfirmado('Popup terminal sigue abierto tras el clic') from exc
+
 
 
 def _cerrar_pestanas_importacion(contexto, principal, anteriores, aris_url):
@@ -548,11 +569,140 @@ def _cerrar_pestanas_importacion(contexto, principal, anteriores, aris_url):
     return cerradas
 
 
-def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
-    """Un XML; confirma antes de cualquier acción que inicia la importación.
+def _esperar_repositorio_listo(page, cfg):
+    """Evento DOM: carpeta correcta y repositorio reactivado tras el popup."""
+    esperado = ' '.join((cfg.get('aris_grupo_informes') or '').split())
+    try:
+        page.wait_for_function(
+            """esperado => {
+                const main = document.querySelector('#main');
+                const body = document.body;
+                if (!main || main.getAttribute('aria-hidden') === 'true' ||
+                    body.getAttribute('data-modal-open') === 'true' ||
+                    [...document.querySelectorAll('div[role="dialog"][aria-hidden="false"]')].length)
+                    return false;
+                const panel = document.querySelector(
+                    '.sidebar.reportSidebar .reportContextPanel .label'
+                );
+                const t = panel && (panel.textContent || '').replace(/\\s+/g, ' ').trim();
+                return !!t && (!esperado || t.toLocaleLowerCase('es') ===
+                                 esperado.toLocaleLowerCase('es'));
+            }""",
+            arg=esperado,
+            timeout=int(cfg.get('aris_timeout_carpeta_ms', 120000))
+        )
+        return True
+    except PlaywrightTimeout:
+        LOG.warning('ARIS: repositorio aún no listo; el siguiente registro abrirá la carpeta configurada')
+        return False
 
-    al_iniciar sirve para escribir checkpoint ANTES de lanzar el informe.
+
+def _ejecutar_en_pagina(page, contexto, xml, cfg, url, al_iniciar=None,
+                        autorizado=False):
+    """Operaciones de UN XML, sin abrir ni cerrar por sí misma el navegador."""
+    modo = cfg.get('modo_aris', 'inspeccionar')
+    grupo_aris = seleccionar_informe(page, cfg)
+    if modo == 'preparar':
+        LOG.info('ARIS: preparación validada, no se lanzó el informe')
+        return {'estado': 'preparado_para_lanzar', 'importado': False}, True
+    if modo != 'ejecutar':
+        return {'estado': 'inspeccionado', 'importado': False}, True
+    if not autorizado:
+        confirmacion = input(
+            f'IMPORTACIÓN REAL en ARIS. Grupo: {grupo_aris}. Archivo: {xml.name}. '
+            'Escribe IMPORTAR para lanzar el informe: '
+        )
+        if confirmacion != 'IMPORTAR':
+            return {'estado': 'cancelado', 'importado': False}, True
+    if al_iniciar:
+        al_iniciar()
+    anteriores = tuple(contexto.pages)
+    page.locator(LAUNCH).click()
+    LOG.info('Informe ARIS lanzado')
+    etapa = adjuntar_xml(page, xml, cfg)
+    if etapa == 'opciones':
+        _opcion_auto(page, cfg)
+        LOG.info('ARIS: importación automática confirmada; esperando resultado')
+    elif etapa == 'rechazo':
+        LOG.warning('ARIS rechazó XML antes de Opciones; sin más clics')
+    else:
+        raise ArisNoConfirmado('Estado inesperado tras seleccionar el XML')
+    resultado = _resultado(page, cfg)
+    _cerrar_pestanas_importacion(contexto, page, anteriores, url)
+    reutilizable = _esperar_repositorio_listo(page, cfg)
+    LOG.info('ARIS: resultado=%s; sesión reutilizable=%s',
+             resultado['estado'], reutilizable)
+    return resultado, reutilizable
+
+
+class SesionAris:
+    """Un Chrome para los XML del lote; importa SIEMPRE en serie.
+
+    Tras resultado confirmado reutiliza la página solo si se observa la
+    carpeta correcta. Ante error, el siguiente registro vuelve a navegar.
     """
+    def __init__(self, cfg, perfil):
+        if cfg.get('modo_aris') != 'ejecutar':
+            raise ValueError('Lote ARIS requiere modo_aris=ejecutar')
+        if not (cfg.get('aris_grupo_informes') or '').strip():
+            raise ValueError('Configura aris_grupo_informes para evitar importar en otra carpeta')
+        self.cfg, self.perfil, self.url = cfg, perfil, _arise_url(cfg)
+        self.p = self.ctx = self.page = None
+        self.reutilizable = False
+
+    def __enter__(self):
+        self.perfil.mkdir(parents=True, exist_ok=True)
+        self.p = sync_playwright().start()
+        try:
+            self.ctx = self.p.chromium.launch_persistent_context(
+                str(self.perfil), channel='chrome', headless=False,
+                accept_downloads=True, chromium_sandbox=True
+            )
+            self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+            self.page.set_default_timeout(int(self.cfg.get('timeout_ms', 120000)))
+            self._navegar()
+            return self
+        except Exception:
+            self.__exit__(None, None, None)
+            raise
+
+    def _navegar(self):
+        self.page.goto(self.url, wait_until='domcontentloaded',
+                       timeout=int(self.cfg.get('timeout_ms', 120000)))
+        esperar_sesion(
+            self.page, 'aris', self.url, self.cfg,
+            lambda: self.page.locator(REPORTS_TAB).wait_for(
+                state='visible', timeout=int(self.cfg.get('aris_timeout_carpeta_ms', 120000))
+            )
+        )
+        self.reutilizable = True
+        LOG.info('ARIS: carpeta configurada abierta y sesión comprobada')
+
+    def importar(self, xml, al_iniciar=None):
+        xml = validar_xml_aris(xml)
+        if not self.reutilizable:
+            self._navegar()
+        try:
+            resultado, self.reutilizable = _ejecutar_en_pagina(
+                self.page, self.ctx, xml, self.cfg, self.url,
+                al_iniciar=al_iniciar, autorizado=True
+            )
+            return resultado
+        except Exception:
+            self.reutilizable = False
+            raise
+
+    def __exit__(self, *args):
+        try:
+            if self.ctx:
+                self.ctx.close()
+        finally:
+            if self.p:
+                self.p.stop()
+
+
+def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
+    """API anterior: un XML y confirmación individual (compatible)."""
     xml = validar_xml_aris(xml)
     url = _arise_url(cfg)
     modo = cfg.get('modo_aris', 'inspeccionar')
@@ -568,49 +718,24 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.set_default_timeout(int(cfg.get('timeout_ms', 120000)))
             page.goto(url, wait_until='domcontentloaded')
-            LOG.info('Repositorio ARIS abierto en carpeta configurada')
+            esperar_sesion(
+                page, 'aris', url, cfg,
+                lambda: page.locator(REPORTS_TAB).wait_for(
+                    state='visible', timeout=int(cfg.get('aris_timeout_carpeta_ms', 120000))
+                )
+            )
             if modo == 'inspeccionar':
-                LOG.info('Inspección ARIS: sin lanzar informes ni subir XML')
                 input('Inspecciona ARIS; Enter para cerrar sin importar... ')
                 return {'estado': 'inspeccionado', 'importado': False}
-            grupo_aris = seleccionar_informe(page, cfg)
-            if modo == 'preparar':
-                LOG.info('ARIS: preparación validada; no se lanzó ningún informe')
-                input('Informe seleccionado. Inspecciona la pantalla; Enter para cerrar SIN lanzar... ')
-                return {'estado': 'preparado_para_lanzar', 'importado': False}
-            confirmacion = input(
-                f'IMPORTACIÓN REAL en ARIS. Grupo: {grupo_aris}. Archivo: {xml.name}. '
-                'Escribe IMPORTAR para lanzar el informe: '
-            )
-            if confirmacion != 'IMPORTAR':
-                LOG.info('Importación cancelada antes de lanzar el informe')
-                return {'estado': 'cancelado', 'importado': False}
-            if al_iniciar:
-                al_iniciar()
-            pestanas_anteriores = tuple(ctx.pages)
-            page.locator(LAUNCH).click()
-            LOG.info('Informe ARIS lanzado')
-            etapa_archivo = adjuntar_xml(page, xml, cfg)
-            if etapa_archivo == 'opciones':
-                _opcion_auto(page, cfg)
-                LOG.info('Importación automática confirmada; esperando resultado de ARIS')
-            elif etapa_archivo == 'rechazo':
-                LOG.warning('No se confirmarán opciones: ARIS ya rechazó el XML')
-            else:
-                raise ArisNoConfirmado('Resultado inesperado al seleccionar fichero')
-            resultado = _resultado(page, cfg)
-            cerradas = _cerrar_pestanas_importacion(
-                ctx, page, pestanas_anteriores, url
-            )
-            LOG.info('ARIS: limpieza final completada; pestañas extra cerradas=%s', cerradas)
+            resultado, _ = _ejecutar_en_pagina(page, ctx, xml, cfg, url, al_iniciar)
             if cfg.get('mantener_chrome_abierto', True):
-                input('Revisa el resultado en Chrome. Enter para cerrar... ')
+                input('Revisa el resultado ARIS; Enter para cerrar... ')
             return resultado
         except Exception:
             if cfg.get('mantener_chrome_abierto', True):
-                LOG.warning('ARIS: fallo de navegación; Chrome queda abierto para revisar DOM')
+                LOG.warning('ARIS: error; Chrome abierto para inspección')
                 try:
-                    input('Revisa la pantalla de ARIS; Enter para cerrar y guardar error... ')
+                    input('Revisa ARIS; Enter para guardar error y cerrar... ')
                 except (EOFError, KeyboardInterrupt):
                     pass
             raise

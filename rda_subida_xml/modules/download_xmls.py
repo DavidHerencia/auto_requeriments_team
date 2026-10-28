@@ -4,6 +4,7 @@ import os
 import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+from modules.session import esperar_sesion
 
 CAMPOS = ('id_solicitud', 'id_n5', 'nombre_proceso', 'xml')
 
@@ -51,9 +52,11 @@ def descargar_xmls(cfg: dict, ruta: Path, perfil: Path):
         try:
             pagina = navegador.pages[0] if navegador.pages else navegador.new_page()
             pagina.goto(url, wait_until='domcontentloaded')
-            input('Inicia sesión en Google si hace falta; al ver el puente pulsa Enter...')
             timeout = int(cfg.get('timeout_ms', 120000))
-            frame = encontrar_frame_puente(pagina, timeout)
+            frame = esperar_sesion(
+                pagina, 'sheets', url, cfg,
+                lambda: encontrar_frame_puente(pagina, timeout)
+            )
             frame.wait_for_function(
                 "() => ['listo','error'].includes(document.querySelector('#estado')?.textContent.trim())",
                 timeout=timeout

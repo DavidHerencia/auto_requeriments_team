@@ -1,0 +1,26 @@
+name: RDA XML - pruebas unitarias
+on:
+  push:
+    paths:
+      - 'rda_subida_xml/**'
+      - '.github/workflows/rda-xml-tests.yml'
+  pull_request:
+    paths:
+      - 'rda_subida_xml/**'
+      - '.github/workflows/rda-xml-tests.yml'
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rda_subida_xml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instalar dependencias (sin navegador)
+        run: python -m pip install -r requirements.txt
+      - name: Probar contratos y lote simulado de cuatro XML
+        run: python -m unittest discover -s tests -v

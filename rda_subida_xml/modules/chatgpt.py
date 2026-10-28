@@ -19,6 +19,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 from config import CHROME_PROFILE
 from modules.download_xmls import validar
+from modules.session import esperar_sesion
 
 LOG = logging.getLogger(__name__)
 MENSAJE_INCOMPLETO = 'incompleto - no se puede generar porque falta demasiada info'
@@ -599,9 +600,14 @@ def _procesar_uno(page, config, original, temporal):
     return _leer_resultado(page, segundo, config, temporal)
 
 
-def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
-    if limite not in (1, 2):
-        raise ValueError('Modo de prueba: --limite debe ser 1 o 2')
+def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
+                       solicitudes=None, reintentar=False, intento='inicial',
+                       confirmar=True):
+    """Lote GPT; reintentos desde original sin pisar versiones anteriores."""
+    if limite is not None and (not isinstance(limite, int) or limite < 1):
+        raise ValueError('--limite debe ser positivo o None para todo el lote')
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', intento):
+        raise ValueError('Etiqueta de intento inválida')
     datos = json.loads(origen.read_text(encoding='utf-8'))
     registros = validar(datos['registros'])
     ruta = base / 'exportaciones' / ('procesados_' + origen.stem + '.json')
@@ -613,17 +619,43 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
         trabajos = [dict(x) for x in registros]
         escribir_json(ruta, trabajos)
 
-    pendientes = [(i, r) for i, r in enumerate(trabajos) if not r.get('estado')]
-    elegidos = pendientes[:limite]
+    permitidos = set(solicitudes) if solicitudes is not None else None
+    if permitidos is not None:
+        presentes = {r['id_solicitud'] for r in trabajos}
+        if not permitidos.issubset(presentes):
+            raise ValueError('Solicitud ausente en la exportación')
+    seleccionados = [(i, r) for i, r in enumerate(trabajos)
+                     if permitidos is None or r['id_solicitud'] in permitidos]
+    elegibles_retry = {'correccion_fallida', 'incompleto', 'postprocesamiento_pendiente'}
+    if intento.startswith('aris_revision_'):
+        elegibles_retry.add('correccion_finalizada')
+    pendientes = [(i, r) for i, r in seleccionados
+                  if ((r.get('estado') in elegibles_retry
+                       and r.get('intento_gpt') != intento)
+                      if reintentar else not r.get('estado'))]
+    elegidos = pendientes[:limite] if limite is not None else pendientes
     if not elegidos:
         LOG.info('No hay pendientes; checkpoint=%s', ruta)
         return ruta
     url = gpt_url(config)
     LOG.info('Seleccionados %s de %s registros pendientes; destino=GPT HERO', len(elegidos), len(pendientes))
-    confirmacion = input(f'Procesar {len(elegidos)} XML(s) con HERO? Escribe PROCESAR: ')
-    if confirmacion != 'PROCESAR':
-        LOG.info('Ejecucion cancelada antes de abrir ChatGPT')
-        return ruta
+    if confirmar:
+        confirmacion = input(f'Procesar {len(elegidos)} XML(s) con HERO? Escribe PROCESAR: ')
+        if confirmacion != 'PROCESAR':
+            LOG.info('Ejecucion cancelada antes de abrir ChatGPT')
+            return ruta
+    if reintentar:
+        for _, registro in elegidos:
+            registro.setdefault('historial_gpt', []).append({
+                'intento_anterior': registro.get('intento_gpt', 'inicial'),
+                'estado': registro.get('estado', ''),
+                'motivo': registro.get('motivo', ''),
+                'xml_corregido_ruta': registro.get('xml_corregido_ruta')
+            })
+            for campo in ('estado', 'motivo', 'xml_corregido_ruta', 'xml_capturado_ruta'):
+                registro.pop(campo, None)
+        escribir_json(ruta, trabajos)
+    subcarpeta = Path('') if intento == 'inicial' else Path('reintentos') / intento
     CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         # Chrome avisa al iniciar sin sandbox; habilitar sandbox cuando sea viable.
@@ -637,10 +669,10 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
             interrumpido = False
             for n, (indice, registro) in enumerate(elegidos, 1):
                 base_archivo = nombre_seguro(registro['id_n5'], registro['nombre_proceso'])
-                final = base / 'corregidos' / (base_archivo + '.xml')
+                final = base / 'corregidos' / subcarpeta / (base_archivo + '.xml')
                 original = base / 'originales' / (base_archivo + '.xml')
-                temporal = base / 'temporales' / (base_archivo + '.xml')
-                capturado = base / 'capturados' / (base_archivo + '.xml')
+                temporal = base / 'temporales' / subcarpeta / (base_archivo + '.xml')
+                capturado = base / 'capturados' / subcarpeta / (base_archivo + '.xml')
                 LOG.info('Registro %s/%s, solicitud=%s: preparando', n, len(elegidos), registro['id_solicitud'])
                 if final.exists():
                     registro.update(estado='requiere_revision', motivo='Archivo final preexistente; revisar sin sobrescribir')
@@ -652,9 +684,12 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                         raise ResultadoIncierto('El XML original local difiere de la exportacion')
                     if not original.exists():
                         original.write_text(registro['xml'], encoding='utf-8')
-                    page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                    _esperar_editor(page, config)
+                    page.goto(url, wait_until='domcontentloaded',
+                              timeout=int(config.get('timeout_ms', 120000)))
+                    esperar_sesion(page, 'chatgpt', url, config,
+                                  lambda: _esperar_editor(page, config))
                     LOG.info('GPT HERO abierto, editor listo; inicio de chat nuevo')
+                    registro['intento_gpt'] = intento
                     registro['estado'] = 'envio_iniciado'
                     escribir_json(ruta, trabajos)
                     texto = _procesar_uno(page, config, original, temporal)
@@ -716,7 +751,7 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1):
                     break
             LOG.info('Checkpoint guardado: %s', ruta)
             resumir_red()
-            if not interrumpido and config.get('mantener_chrome_abierto', True):
+            if not interrumpido and confirmar and config.get('mantener_chrome_abierto', True):
                 input('Chrome queda abierto para revisar. Pulsa Enter cuando quieras cerrarlo...')
         finally:
             ctx.close()

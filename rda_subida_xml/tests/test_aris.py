@@ -12,54 +12,56 @@ from modules.aris import _opcion_auto, _normalizar_tipo_importacion, _resultado,
 
 
 class TestAris(unittest.TestCase):
-    def test_resultado_final_completo_clic_y_cierre(self):
-        pagina, dialogo, boton = MagicMock(), MagicMock(), MagicMock()
+    @staticmethod
+    def _dialogo_final(texto):
+        pagina, dialogo, boton, mensaje = (
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
         pagina.locator.return_value.all.return_value = [dialogo]
         dialogo.is_visible.return_value = True
-        dialogo.inner_text.return_value = 'BBVA - Importar BPMN El informe está completo. Aceptar'
-        dialogo.locator.return_value = boton
+        mensaje.count.return_value = 1
+        mensaje.inner_text.return_value = texto
+        dialogo.locator.side_effect = lambda selector: (
+            mensaje if selector == '#gwt-debug-dialog-message' else boton
+        )
         boton.count.return_value = 1
         boton.is_visible.return_value = True
         boton.is_enabled.return_value = True
         boton.get_attribute.return_value = 'false'
+        return pagina, dialogo, boton, mensaje
 
+    def test_resultado_final_completo_clic_y_cierre(self):
+        pagina, dialogo, boton, _ = self._dialogo_final(
+            'El informe está completo.'
+        )
         result = _resultado(pagina, {'aris_timeout_paso_ms': 15000})
         self.assertEqual(result['estado'], 'informe_completo')
-        self.assertIsNone(result['importado'])  # Informe completo != modelo verificado
-        boton.click.assert_called_once_with()
-        dialogo.wait_for.assert_called_once_with(state='hidden', timeout=15000)
+        self.assertIsNone(result['importado'])
+        boton.click.assert_called_once()
+        dialogo.wait_for.assert_called_once_with(
+            state='hidden', timeout=15000
+        )
 
     def test_resultado_final_xml_rechazado_tambien_acepta(self):
-        pagina, dialogo, boton = MagicMock(), MagicMock(), MagicMock()
-        pagina.locator.return_value.all.return_value = [dialogo]
-        dialogo.is_visible.return_value = True
-        dialogo.inner_text.return_value = (
-            'BBVA - Importar BPMN El fichero seleccionado no es válido. Aceptar'
+        pagina, dialogo, boton, _ = self._dialogo_final(
+            'El fichero seleccionado no es válido.'
         )
-        dialogo.locator.return_value = boton
-        boton.count.return_value = 1
-        boton.is_visible.return_value = True
-        boton.is_enabled.return_value = True
-        boton.get_attribute.return_value = 'false'
-
         result = _resultado(pagina, {})
         self.assertEqual(result['estado'], 'xml_rechazado')
         self.assertFalse(result['importado'])
-        boton.click.assert_called_once_with()
-        dialogo.wait_for.assert_called_once_with(state='hidden', timeout=45000)
+        boton.click.assert_called_once()
+        dialogo.wait_for.assert_called_once_with(
+            state='hidden', timeout=45000
+        )
 
     def test_resultado_final_no_acepta_otro_popup(self):
-        pagina, dialogo, boton = MagicMock(), MagicMock(), MagicMock()
-        pagina.locator.return_value.all.return_value = [dialogo]
-        # La primera lectura es válida, pero cambia durante la confirmación.
-        dialogo.is_visible.return_value = True
-        dialogo.inner_text.side_effect = [
+        pagina, _, boton, mensaje = self._dialogo_final(
+            'El informe está completo.'
+        )
+        mensaje.inner_text.side_effect = [
             'El informe está completo.', 'Opciones de importación'
         ]
-        dialogo.locator.return_value = boton
-        boton.count.return_value = 1
-
-        with self.assertRaisesRegex(ArisNoConfirmado, 'cambió antes de aceptar'):
+        with self.assertRaisesRegex(ArisNoConfirmado, 'cambió antes de Aceptar'):
             _resultado(pagina, {})
         boton.click.assert_not_called()
 
