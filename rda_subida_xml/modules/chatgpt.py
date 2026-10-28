@@ -36,7 +36,7 @@ INICIAL = (
     + REGLA_INCOMPLETO
 )
 RECUPERAR = (
-    'Dame solamente el XML listo para descargar sin nada mas o, '
+    'Dame solamente el XML listo para copiar y pegar (NO para descargar) sin nada mas o, '
     'en caso de no poder, ponmelo completo para copiar y pegar. '
     + REGLA_INCOMPLETO
     + ' Si no tienes otra opcion disponible, si, dame el XML para copiar y yo lo pego.'
@@ -760,7 +760,14 @@ def _leer_resultado(page, nodo, config, temporal):
             LOG.info('Archivo descargado y XML validado; caracteres=%s', len(xml))
             return xml
         except PlaywrightTimeout as exc:
-            raise ResultadoIncierto('El boton de archivo no produjo una descarga verificable') from exc
+            # La respuesta SÍ terminó y ofreció un archivo, pero la UI no
+            # produjo evento de descarga. Es una salida sin XML recuperable,
+            # no un envío incierto: activar la ÚNICA recuperación ya prevista.
+            LOG.warning('HERO entregó archivo, pero el botón Descargar archivo '
+                        'no produjo descarga; solicitar XML para copiar y pegar')
+            raise SalidaSinXml(
+                'HERO ofreció un archivo, pero no se pudo descargar un XML verificable'
+            ) from exc
         finally:
             temporal.unlink(missing_ok=True)
 
