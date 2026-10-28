@@ -1,10 +1,13 @@
 """Regresiones de envío en HERO: un click, no Enter ni duplicados."""
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from modules.chatgpt import (
-    _enviar, INICIAL, ENVIAR, ResultadoIncierto, TURNO
+    _enviar, INICIAL, ENVIAR, ResultadoIncierto, TURNO, procesar_registros
 )
 
 
@@ -66,6 +69,34 @@ class TestEnvioHero(unittest.TestCase):
             self.boton.click.assert_called_once()
             self.editor.press.assert_not_called()
             nuevo.assert_not_called()
+
+    def test_ctrl_c_en_gpt_detiene_pipeline_sin_seguir_a_aris(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / 'data'
+            origen = base / 'exportaciones' / 'registros_prueba.json'
+            origen.parent.mkdir(parents=True)
+            origen.write_text(json.dumps({
+                'version': 1,
+                'registros': [{
+                    'id_solicitud': 'S1', 'id_n5': 'N1',
+                    'nombre_proceso': 'Prueba', 'xml': '<definitions/>'
+                }]
+            }), encoding='utf-8')
+            ctx = MagicMock()
+            ctx.pages = [MagicMock()]
+            with patch('modules.chatgpt.CHROME_PROFILE', base / 'perfil'), \
+                 patch('modules.chatgpt.sync_playwright') as playwright, \
+                 patch('modules.chatgpt.gpt_url', return_value='https://chatgpt.com/g/hero'), \
+                 patch('modules.chatgpt.registrar_flags_chrome'), \
+                 patch('modules.chatgpt.instalar_diagnostico'), \
+                 patch('modules.chatgpt._esperar_editor'), \
+                 patch('modules.chatgpt._procesar_uno', side_effect=KeyboardInterrupt):
+                playwright.return_value.__enter__.return_value.chromium.launch_persistent_context.return_value = ctx
+                with self.assertRaisesRegex(KeyboardInterrupt, 'pipeline detenido'):
+                    procesar_registros(origen, {}, base, limite=None, confirmar=False)
+            checkpoint = base / 'exportaciones' / 'procesados_registros_prueba.json'
+            estado = json.loads(checkpoint.read_text(encoding='utf-8'))['registros'][0]['estado']
+            self.assertEqual(estado, 'requiere_revision')
 
     def test_boton_ambiguo_falla_sin_click(self):
         self.boton.count.return_value = 2

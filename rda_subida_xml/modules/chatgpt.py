@@ -809,4 +809,8 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
                 input('Chrome queda abierto para revisar. Pulsa Enter cuando quieras cerrarlo...')
         finally:
             ctx.close()
+    if interrumpido and not confirmar:
+        # En el pipeline, Ctrl+C debe detener TODAS las etapas, incluida ARIS.
+        # La fase GPT individual conserva el comportamiento anterior.
+        raise KeyboardInterrupt('Procesamiento GPT interrumpido; pipeline detenido')
     return ruta
