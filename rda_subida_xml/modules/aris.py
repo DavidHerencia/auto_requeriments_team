@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-from modules.session import esperar_sesion
+from modules.session import esperar_sesion, navegar_con_sesion
 
 LOG = logging.getLogger(__name__)
 REPORT = 'BBVA - Importar BPMN'
@@ -667,12 +667,11 @@ class SesionAris:
             raise
 
     def _navegar(self):
-        self.page.goto(self.url, wait_until='domcontentloaded',
-                       timeout=int(self.cfg.get('timeout_ms', 120000)))
+        navegar_con_sesion(self.page, 'aris', self.url, self.cfg)
         esperar_sesion(
             self.page, 'aris', self.url, self.cfg,
             lambda: self.page.locator(REPORTS_TAB).wait_for(
-                state='visible', timeout=int(self.cfg.get('aris_timeout_carpeta_ms', 120000))
+                state='visible', timeout=3000
             )
         )
         self.reutilizable = True
@@ -682,6 +681,15 @@ class SesionAris:
         xml = validar_xml_aris(xml)
         if not self.reutilizable:
             self._navegar()
+        else:
+            # La sesión puede caducar entre dos informes del mismo lote.
+            # Este chequeo ocurre ANTES de iniciar el siguiente informe.
+            esperar_sesion(
+                self.page, 'aris', self.url, self.cfg,
+                lambda: self.page.locator(REPORTS_TAB).wait_for(
+                    state='visible', timeout=3000
+                )
+            )
         try:
             resultado, self.reutilizable = _ejecutar_en_pagina(
                 self.page, self.ctx, xml, self.cfg, self.url,
@@ -717,11 +725,11 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.set_default_timeout(int(cfg.get('timeout_ms', 120000)))
-            page.goto(url, wait_until='domcontentloaded')
+            navegar_con_sesion(page, 'aris', url, cfg)
             esperar_sesion(
                 page, 'aris', url, cfg,
                 lambda: page.locator(REPORTS_TAB).wait_for(
-                    state='visible', timeout=int(cfg.get('aris_timeout_carpeta_ms', 120000))
+                    state='visible', timeout=3000
                 )
             )
             if modo == 'inspeccionar':

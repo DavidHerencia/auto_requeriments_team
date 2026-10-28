@@ -39,7 +39,7 @@ class TestEnvioHero(unittest.TestCase):
         self.assertEqual(resultado, 'RESPUESTA')
         self.assertIn('@BPMN ARIS XML Repair', INICIAL)
         self.editor.fill.assert_called_once_with(INICIAL)
-        self.editor.press.assert_called_once_with('Enter', timeout=30000)
+        self.editor.press.assert_called_once_with('Enter', timeout=120000)
         self.boton.click.assert_not_called()
         self.page.evaluate.assert_not_called()
         self.page.wait_for_function.assert_called_once()
@@ -50,7 +50,7 @@ class TestEnvioHero(unittest.TestCase):
         argumentos = self.page.wait_for_function.call_args.kwargs
         self.assertEqual(argumentos['arg']['responseSelector'], TURNO)
         self.assertEqual(argumentos['arg']['previousResponses'], 0)
-        self.assertEqual(argumentos['timeout'], 10000)
+        self.assertEqual(argumentos['timeout'], 60000)
 
     def test_sin_evento_enter_click_unico_si_editor_sigue_pendiente(self):
         self.page.wait_for_function.side_effect = [
@@ -62,20 +62,31 @@ class TestEnvioHero(unittest.TestCase):
         }
         resultado, nuevo = self._enviar()
         self.assertEqual(resultado, 'RESPUESTA')
-        self.editor.press.assert_called_once_with('Enter', timeout=30000)
-        self.boton.click.assert_called_once_with(timeout=30000)
+        self.editor.press.assert_called_once_with('Enter', timeout=120000)
+        self.boton.click.assert_called_once_with(timeout=120000)
         self.assertEqual(self.page.wait_for_function.call_count, 2)
         nuevo.assert_called_once()
 
-    def test_enter_sin_evento_y_estado_ambiguo_no_click(self):
+    def test_enter_tardio_tiene_turno_y_no_hace_click(self):
         self.page.wait_for_function.side_effect = PlaywrightTimeout('sin evento')
         self.page.evaluate.return_value = {
             'pendiente': False, 'motivo': 'turno_nuevo'
         }
+        resultado, nuevo = self._enviar()
+        self.assertEqual(resultado, 'RESPUESTA')
+        self.boton.click.assert_not_called()
+        nuevo.assert_called_once()
+
+    def test_enter_sin_evento_y_boton_no_disponible_no_click(self):
+        self.page.wait_for_function.side_effect = PlaywrightTimeout('sin evento')
+        self.page.evaluate.return_value = {
+            'pendiente': False, 'motivo': 'boton_no_habilitado',
+            'caracteresPendientes': 100
+        }
         with patch('modules.chatgpt._esperar_editor', return_value=self.editor), \
              patch('modules.chatgpt._respuestas_asistente', return_value=self.respuestas), \
              patch('modules.chatgpt._nuevo_turno') as nuevo:
-            with self.assertRaisesRegex(ResultadoIncierto, 'evitar doble envío'):
+            with self.assertRaisesRegex(ResultadoIncierto, 'boton_no_habilitado'):
                 _enviar(self.page, {}, INICIAL)
             self.boton.click.assert_not_called()
             nuevo.assert_not_called()
@@ -110,6 +121,41 @@ class TestEnvioHero(unittest.TestCase):
                 _enviar(self.page, {}, INICIAL)
         self.boton.click.assert_not_called()
 
+
+    def test_envio_incierto_detiene_lote_y_guarda_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / 'data'
+            archivo = base / 'exportaciones' / 'registros_prueba.json'
+            archivo.parent.mkdir(parents=True)
+            archivo.write_text(json.dumps({
+                'version': 1,
+                'registros': [
+                    {'id_solicitud': f'S{i}', 'id_n5': f'N{i}',
+                     'nombre_proceso': f'Prueba {i}', 'xml': '<definitions/>'}
+                    for i in (1, 2)
+                ]
+            }), encoding='utf-8')
+            ctx = MagicMock()
+            ctx.pages = [MagicMock()]
+            with patch('modules.chatgpt.CHROME_PROFILE', base / 'perfil'), \
+                 patch('modules.chatgpt.sync_playwright') as playwright, \
+                 patch('modules.chatgpt.gpt_url', return_value='https://chatgpt.com/g/hero'), \
+                 patch('modules.chatgpt.registrar_flags_chrome'), \
+                 patch('modules.chatgpt.instalar_diagnostico'), \
+                 patch('modules.chatgpt.esperar_sesion'), \
+                 patch('modules.chatgpt._procesar_uno',
+                       side_effect=ResultadoIncierto('interfaz ambigua')) as procesar:
+                playwright.return_value.__enter__.return_value.chromium.launch_persistent_context.return_value = ctx
+                with self.assertRaisesRegex(ResultadoIncierto, 'pipeline GPT detenido|Pipeline GPT detenido'):
+                    procesar_registros(
+                        archivo, {'mantener_chrome_abierto': False}, base,
+                        limite=None, confirmar=False
+                    )
+            self.assertEqual(procesar.call_count, 1)
+            ruta = base / 'exportaciones' / 'procesados_registros_prueba.json'
+            registros = json.loads(ruta.read_text(encoding='utf-8'))['registros']
+            self.assertEqual(registros[0]['estado'], 'requiere_revision')
+            self.assertNotIn('estado', registros[1])
 
     def test_ctrl_c_en_gpt_detiene_pipeline_sin_seguir_a_aris(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
-from modules.session import esperar_sesion
+from modules.session import esperar_sesion, navegar_con_sesion
 
 CAMPOS = ('id_solicitud', 'id_n5', 'nombre_proceso', 'xml')
 
@@ -51,16 +51,22 @@ def descargar_xmls(cfg: dict, ruta: Path, perfil: Path):
             chromium_sandbox=True)
         try:
             pagina = navegador.pages[0] if navegador.pages else navegador.new_page()
-            pagina.goto(url, wait_until='domcontentloaded')
+            navegar_con_sesion(pagina, 'sheets', url, cfg)
             timeout = int(cfg.get('timeout_ms', 120000))
             frame = esperar_sesion(
                 pagina, 'sheets', url, cfg,
-                lambda: encontrar_frame_puente(pagina, timeout)
+                lambda: encontrar_frame_puente(pagina, 3000)
             )
-            frame.wait_for_function(
-                "() => ['listo','error'].includes(document.querySelector('#estado')?.textContent.trim())",
-                timeout=timeout
-            )
+            # Si el SSO expira durante la carga del puente, avisar pronto.
+            def puente_terminado():
+                actual = encontrar_frame_puente(pagina, 3000)
+                actual.wait_for_function(
+                    "() => ['listo','error'].includes(document.querySelector('#estado')?.textContent.trim())",
+                    timeout=3000
+                )
+                return actual
+
+            frame = esperar_sesion(pagina, 'sheets', url, cfg, puente_terminado)
             if frame.locator('#estado').inner_text().strip() != 'listo':
                 raise RuntimeError('Apps Script: ' + frame.locator('#error').inner_text()[:200])
             # El JSON no se imprime en consola: contiene XML de los procesos.

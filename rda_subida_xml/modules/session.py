@@ -5,9 +5,10 @@ tras CONTINUAR interrumpe ese retorno y produce el error de navegación
 observado con Apps Script / IdP BBVA.
 """
 import logging
+import time
 from urllib.parse import urlsplit
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
+from playwright.sync_api import TimeoutError as PlaywrightTimeout, Error as PlaywrightError
 
 LOG = logging.getLogger(__name__)
 HOSTS_LOGIN = ('accounts.google.com', 'login.microsoftonline.com', 'auth.openai.com')
@@ -48,42 +49,75 @@ def falta_sesion(page, servicio):
     return False
 
 
-def esperar_sesion(page, servicio, url, config, listo):
-    """Esperar evidencia DOM de la aplicación y pausar ante una sesión expirada.
+def navegar_con_sesion(page, servicio, url, config):
+    """Navegación inicial, tolerando únicamente una redirección SSO observada.
 
-    No navegar de nuevo tras el login: el proveedor SSO está redirigiendo
-    y un nuevo page.goto() interrumpe esa navegación. Tampoco reenviar XML,
-    prompts ni informes. 'listo' comprueba el elemento real de cada etapa,
-    con timeout máximo determinado por el módulo llamador.
+    La autenticación se realizará en esperar_sesion, sin recargar ni repetir
+    acciones durante un redirect en curso.
+    """
+    try:
+        page.goto(url, wait_until='domcontentloaded',
+                  timeout=int(config.get('timeout_ms', 120000)))
+    except PlaywrightError as exc:
+        if ('interrupted by another navigation' not in str(exc)
+                or not falta_sesion(page, servicio)):
+            raise
+        LOG.warning('%s: navegación interrumpida por redirección de autenticación; '
+                    'esperando SSO sin recargar', servicio)
+
+
+def esperar_sesion(page, servicio, url, config, listo):
+    """Comprobar estado real del DOM; observar login entre sondeos cortos.
+
+    `listo` debe hacer una espera pequeña (p.ej. 3 segundos) y lanzar
+    PlaywrightTimeout/TimeoutError si la aplicación sigue cargando. Así
+    podemos detectar IDP de inmediato, no al cabo de 120 segundos.
     """
     max_login = int(config.get('max_pausas_login', 3))
-    if max_login < 0:
-        raise ValueError('max_pausas_login no puede ser negativo')
-    pausas = 0
+    timeout_ms = int(config.get('timeout_sesion_ms',
+                                config.get('timeout_ms', 120000)))
+    if max_login < 0 or timeout_ms <= 0:
+        raise ValueError('Configuración de sesión inválida')
+    pausas, ultimo_log = 0, 0.0
+    esperando_retorno_sso = False
+    limite = time.monotonic() + timeout_ms / 1000
     while True:
-        if falta_sesion(page, servicio):
+        autenticando = falta_sesion(page, servicio)
+        if not autenticando:
+            esperando_retorno_sso = False
+        if autenticando and not esperando_retorno_sso:
             if pausas >= max_login:
                 raise RuntimeError(f'{servicio}: sesión no recuperada tras {pausas} pausas')
             pausas += 1
-            LOG.warning('%s: autenticación requerida (%s/%s); pausa sin reenviar',
+            LOG.warning('%s: REDIRECCIÓN A LOGIN/SSO detectada (%s/%s). '
+                        'Se necesita intervención del usuario.',
                         servicio, pausas, max_login)
             respuesta = input(
-                f'{servicio}: completa el login en Chrome y deja que regrese '
-                'automáticamente a la aplicación. Cuando esté lista, '
-                'escribe CONTINUAR: '
+                f'{servicio.upper()}: es necesario iniciar sesión en Chrome. '
+                'Completa el login corporativo y deja que el navegador '
+                'regrese automáticamente a la aplicación. '
+                'Cuando esté lista, escribe CONTINUAR: '
             )
             if respuesta.strip() != 'CONTINUAR':
                 raise KeyboardInterrupt('Inicio de sesión no confirmado')
-            LOG.info('%s: esperando aplicación lista tras SSO, sin otra navegación',
-                     servicio)
+            LOG.info('%s: verificando sesión tras SSO, sin nueva navegación', servicio)
+            esperando_retorno_sso = True
+            limite = time.monotonic() + timeout_ms / 1000
         try:
             return listo()
         except (PlaywrightTimeout, TimeoutError) as exc:
-            if falta_sesion(page, servicio):
-                LOG.warning('%s: la autenticación continúa; esperar confirmación',
-                            servicio)
+            # Continuar observando la URL y el DOM sin bloquear en un wait largo.
+            ahora = time.monotonic()
+            if ahora >= limite and falta_sesion(page, servicio):
+                # Si el SSO sigue abierto, solicitar otra intervención; no
+                # repetir el prompt cada 3 segundos mientras redirige.
+                esperando_retorno_sso = False
                 continue
-            raise RuntimeError(
-                f'{servicio}: la aplicación no llegó a estado listo; '
-                'revisar navegador y logs, sin reenviar acciones'
-            ) from exc
+            if ahora >= limite:
+                raise RuntimeError(
+                    f'{servicio}: la aplicación no llegó a estado listo '
+                    'tras verificar la sesión; revisar Chrome sin reenviar operaciones'
+                ) from exc
+            if ahora - ultimo_log > 15:
+                LOG.info('%s: esperando señal de aplicación lista', servicio)
+                ultimo_log = ahora

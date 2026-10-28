@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 from config import CHROME_PROFILE
 from modules.download_xmls import validar
-from modules.session import esperar_sesion
+from modules.session import esperar_sesion, navegar_con_sesion
 
 LOG = logging.getLogger(__name__)
 MENSAJE_INCOMPLETO = 'incompleto - no se puede generar porque falta demasiada info'
@@ -269,10 +269,13 @@ def _selector(config, clave, default):
     return config.get(clave) or default
 
 
-def _esperar_editor(page, config):
+def _esperar_editor(page, config, timeout_ms=None):
     sel = _selector(config, 'gpt_editor_selector', EDITOR)
     editor = page.locator(sel)
-    editor.wait_for(state='visible', timeout=int(config.get('timeout_ms', 120000)))
+    editor.wait_for(state='visible', timeout=(
+        int(timeout_ms) if timeout_ms is not None
+        else int(config.get('timeout_ms', 120000))
+    ))
     if editor.count() != 1:
         raise ResultadoIncierto(f'Se encontraron {editor.count()} editores (esperado: 1)')
     return editor
@@ -377,7 +380,7 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
     El conteo de turnos de usuario NO es condicion necesaria: la version
     actual de HERO puede mostrar el mensaje sin data-turn-key='...:user'.
     """
-    limite = time.monotonic() + int(config.get('timeout_respuesta_ms', 480000)) / 1000
+    limite = time.monotonic() + max(900000, int(config.get('timeout_respuesta_ms', 900000))) / 1000
     visto_respuesta = False
     generacion_vista = False
     estado_anterior = None
@@ -536,20 +539,33 @@ SENAL_ENVIO_JS = r"""({editorSelector, responseSelector, userSelector,
 
 PENDIENTE_ENVIO_JS = r"""({editorSelector, responseSelector, userSelector,
                          sendSelector, previousResponses, previousUsers}) => {
-    if (document.querySelectorAll(responseSelector).length > previousResponses
-        || document.querySelectorAll(userSelector).length > previousUsers)
-        return {pendiente: false, motivo: 'turno_nuevo'};
-    const editores = document.querySelectorAll(editorSelector);
-    const botones = document.querySelectorAll(sendSelector);
+    const respuestas = document.querySelectorAll(responseSelector).length;
+    const usuarios = document.querySelectorAll(userSelector).length;
+    if (respuestas > previousResponses || usuarios > previousUsers)
+        return {pendiente: false, motivo: 'turno_nuevo',
+                respuestasNuevas: respuestas - previousResponses,
+                usuariosNuevos: usuarios - previousUsers};
     const stop = [...document.querySelectorAll('[data-testid="stop-button"]')]
         .some(el => {
             const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
+            const css = getComputedStyle(el);
+            return r.width > 0 && r.height > 0
+                && css.visibility !== 'hidden' && css.display !== 'none';
         });
-    if (editores.length !== 1 || botones.length !== 1 || stop)
-        return {pendiente: false, motivo: 'interfaz_ambigua'};
+    if (stop)
+        return {pendiente: false, motivo: 'generacion_iniciada'};
+    const editores = document.querySelectorAll(editorSelector);
+    const botones = document.querySelectorAll(sendSelector);
+    if (editores.length !== 1)
+        return {pendiente: false, motivo: 'editor_ambiguo',
+                cantidadEditores: editores.length, cantidadBotones: botones.length};
     const texto = (editores[0].innerText || editores[0].textContent || '')
         .replace(/[\u200b\u200c\u200d]/g, '').trim();
+    if (!texto)
+        return {pendiente: false, motivo: 'editor_vaciado'};
+    if (botones.length !== 1)
+        return {pendiente: false, motivo: 'boton_ambiguo',
+                caracteresPendientes: texto.length, cantidadBotones: botones.length};
     const boton = botones[0];
     const rect = boton.getBoundingClientRect();
     const css = getComputedStyle(boton);
@@ -557,11 +573,11 @@ PENDIENTE_ENVIO_JS = r"""({editorSelector, responseSelector, userSelector,
         && boton.getAttribute('aria-disabled') !== 'true'
         && rect.width > 0 && rect.height > 0
         && css.visibility !== 'hidden' && css.display !== 'none';
-    return {pendiente: !!texto && habilitado,
-            motivo: texto && habilitado ? 'mensaje_sigue_en_editor'
-                                        : 'envio_no_confirmable'};
+    return {pendiente: habilitado,
+            motivo: habilitado ? 'mensaje_sigue_en_editor'
+                              : 'boton_no_habilitado',
+            caracteresPendientes: texto.length};
 }"""
-
 
 def _enviar(page, config, prompt, archivo=None):
     """Enter primero; clic como respaldo SOLO si el mensaje sigue pendiente.
@@ -572,7 +588,9 @@ def _enviar(page, config, prompt, archivo=None):
     editor = _esperar_editor(page, config)
     anteriores = _respuestas_asistente(page, config).count()
     selector_usuarios = (
-        '[data-chatgpt-turn-key$=":user"], [data-turn-key$=":user"]'
+        '[data-chatgpt-turn-key$=":user"], [data-turn-key$=":user"], '
+        '[data-chatgpt-search-unit-key$=":user"], '
+        '[data-content-search-unit-key$=":user"]'
     )
     usuarios = page.locator(selector_usuarios).count()
     if archivo:
@@ -580,8 +598,11 @@ def _enviar(page, config, prompt, archivo=None):
     editor.fill(prompt)
     LOG.info('Prompt escrito; caracteres=%s adjunto=%s', len(prompt), bool(archivo))
 
-    timeout = int(config.get('timeout_envio_ms', 30000))
-    espera_enter = min(int(config.get('gpt_timeout_enter_ms', 10000)), timeout)
+    # Un config.local.json antiguo podría conservar máximos de 30s/10s.
+    # Estos plazos son respaldos: la señal del DOM siempre termina antes.
+    timeout = max(120000, int(config.get('timeout_envio_ms', 120000)))
+    espera_enter = min(max(60000, int(config.get('gpt_timeout_enter_ms', 60000))),
+                       timeout)
     if espera_enter <= 0 or timeout <= 0:
         raise ValueError('Timeout de envío GPT debe ser positivo')
     selector_editor = _selector(config, 'gpt_editor_selector', EDITOR)
@@ -622,14 +643,26 @@ def _enviar(page, config, prompt, archivo=None):
         # el botón es único y accionable, y no hay respuesta/generación nueva.
         LOG.warning('GPT: Enter no produjo señal de envío; comprobando respaldo')
 
-    observacion = page.evaluate(
-        PENDIENTE_ENVIO_JS, {**estado_arg, 'sendSelector': selector_boton}
-    )
+    try:
+        observacion = page.evaluate(
+            PENDIENTE_ENVIO_JS, {**estado_arg, 'sendSelector': selector_boton}
+        )
+    except Exception as exc:
+        raise ResultadoIncierto(
+            'No se pudo inspeccionar el editor tras Enter; no arriesgar doble envío'
+        ) from exc
+    # Solo metadatos seguros: NUNCA escribir el prompt o XML en el log.
+    LOG.warning('GPT: estado del editor después de Enter: %s', observacion)
+    if isinstance(observacion, dict) and observacion.get('motivo') in (
+        'turno_nuevo', 'generacion_iniciada', 'editor_vaciado'
+    ):
+        LOG.info('GPT: envío reconocido tras observación tardía; sin clic')
+        return _nuevo_turno(page, config, anteriores, usuarios)
     if not isinstance(observacion, dict) or not observacion.get('pendiente'):
         motivo = observacion.get('motivo') if isinstance(observacion, dict) else 'sin_estado'
         raise ResultadoIncierto(
-            f'Enter sin confirmación y sin evidencia de mensaje pendiente '
-            f'({motivo}); no usar clic para evitar doble envío'
+            f'Enter sin confirmación; diagnóstico={motivo}. '
+            'No abandonar ni reenviar el chat sin revisión'
         )
     boton = page.locator(selector_boton)
     if boton.count() != 1 or not boton.is_visible() or not boton.is_enabled():
@@ -788,6 +821,7 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             resumir_red = instalar_diagnostico(page)
             interrumpido = False
+            error_incierto = None
             for n, (indice, registro) in enumerate(elegidos, 1):
                 base_archivo = nombre_seguro(registro['id_n5'], registro['nombre_proceso'])
                 final = base / 'corregidos' / subcarpeta / (base_archivo + '.xml')
@@ -805,10 +839,9 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
                         raise ResultadoIncierto('El XML original local difiere de la exportacion')
                     if not original.exists():
                         original.write_text(registro['xml'], encoding='utf-8')
-                    page.goto(url, wait_until='domcontentloaded',
-                              timeout=int(config.get('timeout_ms', 120000)))
+                    navegar_con_sesion(page, 'chatgpt', url, config)
                     esperar_sesion(page, 'chatgpt', url, config,
-                                  lambda: _esperar_editor(page, config))
+                                  lambda: _esperar_editor(page, config, timeout_ms=3000))
                     LOG.info('GPT HERO abierto, editor listo; inicio de chat nuevo')
                     registro['intento_gpt'] = intento
                     registro['estado'] = 'envio_iniciado'
@@ -854,6 +887,25 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
                         xml_capturado_ruta=str(capturado)
                     )
                     LOG.warning('Registro %s: XML capturado, requiere revisar la lane: %s', n, e)
+                except ResultadoIncierto as e:
+                    # Un envío puede seguir generándose; no navegar al siguiente
+                    # chat y destruir la única oportunidad de recuperar su XML.
+                    error_incierto = e
+                    interrumpido = True
+                    registro.update(estado='requiere_revision', motivo=str(e))
+                    LOG.error('GPT: estado incierto de solicitud=%s. '
+                              'Lote pausado: no iniciar siguiente XML ni ARIS.',
+                              registro['id_solicitud'])
+                    if config.get('mantener_chrome_abierto', True):
+                        try:
+                            input(
+                                'GPT: envío sin resultado confirmable. Se detuvo '
+                                'el lote para no perder una respuesta en curso. '
+                                'Revisa el chat abierto; pulsa Enter aquí '
+                                'cuando termines la inspección: '
+                            )
+                        except (EOFError, KeyboardInterrupt):
+                            pass
                 except KeyboardInterrupt:
                     interrumpido = True
                     registro.update(
@@ -876,8 +928,12 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
                 input('Chrome queda abierto para revisar. Pulsa Enter cuando quieras cerrarlo...')
         finally:
             ctx.close()
+    if error_incierto is not None and not confirmar:
+        raise ResultadoIncierto(
+            'Pipeline GPT detenido por envío de resultado incierto: '
+            + str(error_incierto)
+        ) from error_incierto
     if interrumpido and not confirmar:
         # En el pipeline, Ctrl+C debe detener TODAS las etapas, incluida ARIS.
-        # La fase GPT individual conserva el comportamiento anterior.
         raise KeyboardInterrupt('Procesamiento GPT interrumpido; pipeline detenido')
     return ruta

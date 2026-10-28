@@ -559,3 +559,43 @@ El adjunto, la captura de XML, la recuperación de respuesta y el
 postprocesamiento no se modificaron. Las pruebas cubren Enter con éxito,
 respaldo por clic, estado ambiguo, error de Enter y clic sin confirmación.
 No se ha validado todavía esta variante en el Chrome corporativo real.
+
+### Preflight de sesiones y diagnóstico GPT (28-10-2026)
+
+El pipeline comienza con `verificar_sesiones()` usando el **mismo perfil
+persistente de Chrome** para comprobar, en orden, Google Apps Script,
+GPT HERO y ARIS. En ARIS verifica también el contexto exacto de informes
+`03 PROYECTOS`; no lanza informes ni adjunta XML durante este paso.
+Si alguna aplicación redirige a `idp.*` o muestra un login, avisa al
+usuario y solicita `CONTINUAR` después de autenticarse. **No vuelve a
+navegar mientras el SSO esté redirigiendo.** Los chequeos posteriores a
+la apertura de cada etapa y entre importaciones ARIS siguen activos.
+
+En el log del 28/10, solicitudes `S000000000628` y `S000000000630`
+produjeron XML válidos y ARIS confirmó `informe_completo`. Las solicitudes
+`S000000000629` y `S000000000659` terminaron en `ResultadoIncierto`
+**10 segundos después de Enter, antes de detectar una respuesta**; por
+ello el informe no permite afirmar si llegaron a enviarse. Esto no
+fue un timeout de generación; las otras dos respuestas llegaron en
+unos 25–30 s. Los errores HTTP 403 agregados no identifican su causa.
+
+Para reducir falsas detecciones, el margen máximo de Enter pasa a
+**60 s**, el límite de envío a **120 s** y el de respuesta completa
+**15 minutos**. Son límites máximos, **no esperas fijas**: la automatización
+avanza en cuanto el DOM indica el evento esperado. Estos mínimos se
+aplican incluso con `config.local.json` antiguo, sin exigir modificarlo.
+Si Enter no se confirma, se inspecciona el editor, el botón y la presencia
+de turnos/generación; el log registra solo metadatos, jamás el prompt o
+XML. Si el turno aparece tardíamente continúa sin duplicar; solo hace clic
+si el mensaje sigue pendiente y el botón Enviar está habilitado.
+
+Si tampoco existe una evidencia inequívoca, **se detiene el lote GPT y
+NO comienza ARIS**. Con `mantener_chrome_abierto=true` solicita inspección
+manual del chat antes de cerrar Chrome, conservando el checkpoint.
+Nunca reenvía automáticamente un prompt posiblemente procesado.
+
+**Importante para nuevas pruebas:** los diagramas `S000000000628` y
+`S000000000630` ya fueron importados con éxito en el test informado.
+No volver a ejecutar simplemente `--limite 4` sobre esa misma selección
+sin confirmar ausencia de duplicados. Usar `--ids` con cuatro solicitudes
+reales que todavía no estén importadas.

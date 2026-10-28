@@ -14,8 +14,9 @@ from pathlib import Path
 
 from config import DATA, CHROME_PROFILE
 from modules.download_xmls import descargar_xmls, validar
-from modules.chatgpt import procesar_registros, escribir_json, nombre_seguro
+from modules.chatgpt import procesar_registros, escribir_json, nombre_seguro, ResultadoIncierto
 from modules.aris import SesionAris
+from modules.preflight import verificar_sesiones
 
 LOG = logging.getLogger(__name__)
 REINTENTABLES_GPT = {'correccion_fallida', 'incompleto', 'postprocesamiento_pendiente'}
@@ -139,6 +140,8 @@ def _sync_gpt(ruta, doc, procesados, etiqueta, solo=None):
         if solo is not None and sid not in solo:
             continue
         r = por_id[sid]
+        if not r.get('estado'):
+            continue  # No etiquetar como fallido un XML aún no procesado.
         pasado = {'pasada': etiqueta, 'estado': r.get('estado', 'pendiente'),
                   'motivo': r.get('motivo')}
         if not any(x['pasada'] == etiqueta for x in reg['intentos_gpt']):
@@ -154,7 +157,10 @@ def _sync_gpt(ruta, doc, procesados, etiqueta, solo=None):
             reg['etapa_fallo'] = None
             reg['motivo'] = None
         else:
-            reg['estado_final'] = 'no_generado'
+            reg['estado_final'] = (
+                'requiere_revision' if r.get('estado') == 'requiere_revision'
+                else 'no_generado'
+            )
             reg['etapa_fallo'] = 'chatgpt'
             reg['motivo'] = r.get('motivo') or r.get('estado', 'sin XML')
     _guardar_reporte(ruta, doc)
@@ -171,6 +177,15 @@ def _pasada_gpt(lote, cfg, ruta, doc, etapa, etiqueta, solicitudes,
             lote, cfg, DATA, limite=None, solicitudes=solicitudes,
             reintentar=reintentar, intento=etiqueta, confirmar=False
         )
+    except (ResultadoIncierto, KeyboardInterrupt):
+        # La sesión GPT se detiene para inspección. Conservar en el reporte
+        # los registros ya terminados y el XML incierto, sin inventar fallos
+        # en las solicitudes aún no atendidas.
+        parcial = DATA / 'exportaciones' / ('procesados_' + lote.stem + '.json')
+        if parcial.exists():
+            _sync_gpt(ruta, doc, parcial, etiqueta, set(solicitudes))
+        LOG.warning('GPT %s: pasada interrumpida; checkpoint parcial guardado', etapa)
+        raise
     except Exception:
         LOG.exception('La pasada %s terminó con excepción; conservar checkpoints', etapa)
         raise
@@ -262,6 +277,9 @@ def ejecutar_pipeline(cfg, limite=4, ids=None, archivo=None):
         raise ValueError('Pipeline exige modo_chatgpt=ejecutar y modo_aris=ejecutar')
     if not cfg.get('aris_grupo_informes'):
         raise ValueError('Especificar aris_grupo_informes antes de ejecutar')
+    # Verificar Google/HERO/ARIS ANTES de descargar o procesar XML alguno.
+    # Reutiliza el perfil actual, sin tocar los XML ni lanzar informes.
+    verificar_sesiones(cfg, CHROME_PROFILE)
     if archivo is None:
         nombre = datetime.now(timezone.utc).strftime('registros_%Y%m%dT%H%M%S_%fZ.json')
         archivo = descargar_xmls(

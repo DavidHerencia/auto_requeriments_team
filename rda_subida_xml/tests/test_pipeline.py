@@ -85,11 +85,13 @@ class TestPipeline(unittest.TestCase):
             with patch.object(pipeline, 'DATA', data), \
                  patch.object(pipeline, 'CHROME_PROFILE', data / 'perfil'), \
                  patch.object(pipeline, 'descargar_xmls', side_effect=descargar), \
+                 patch.object(pipeline, 'verificar_sesiones') as preflight, \
                  patch.object(pipeline, 'procesar_registros', side_effect=corregir), \
                  patch.object(pipeline, 'SesionAris', ArisFalso), \
                  patch('builtins.input', return_value='EJECUTAR 4'):
                 archivo = pipeline.ejecutar_pipeline(cfg, limite=4)
 
+            preflight.assert_called_once_with(cfg, data / 'perfil')
             reporte = json.loads(archivo.read_text(encoding='utf-8'))
             self.assertEqual(reporte['resumen']['total'], 4)
             self.assertEqual(reporte['resumen']['pasaron'], 4)
@@ -163,9 +165,38 @@ class TestPipeline(unittest.TestCase):
             }), encoding='utf-8')
             cfg = {'modo_chatgpt': 'ejecutar', 'modo_aris': 'ejecutar',
                    'aris_grupo_informes': '03 PROYECTOS'}
-            with patch.object(pipeline, 'DATA', data):
+            with patch.object(pipeline, 'DATA', data), \
+                 patch.object(pipeline, 'verificar_sesiones'):
                 with self.assertRaisesRegex(RuntimeError, 'resultado incierto'):
                     pipeline.ejecutar_pipeline(cfg, limite=1, archivo=raw)
+
+    def test_reporte_gpt_interrumpido_no_marca_pendientes_como_fallidos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / 'data'
+            registros = [
+                {'id_solicitud': sid, 'id_n5': sid,
+                 'nombre_proceso': sid, 'xml': '<definitions/>'}
+                for sid in ('S1', 'S2')
+            ]
+            reporte = data / 'reportes' / 'test.json'
+            procesados = data / 'exportaciones' / 'procesados_test.json'
+            procesados.parent.mkdir(parents=True)
+            procesados.write_text(json.dumps({
+                'registros': [
+                    {**registros[0], 'estado': 'requiere_revision',
+                     'motivo': 'envío incierto'},
+                    registros[1]
+                ]
+            }), encoding='utf-8')
+            doc = pipeline._reporte_inicial(reporte, registros)
+            with patch.object(pipeline, 'DATA', data):
+                pipeline._sync_gpt(reporte, doc, procesados, 'inicial',
+                                   {'S1', 'S2'})
+            self.assertEqual(doc['registros'][0]['estado_final'],
+                             'requiere_revision')
+            self.assertEqual(doc['registros'][1]['estado_final'],
+                             'pendiente')
+            self.assertEqual(doc['resumen']['pendientes'], 1)
 
     def test_resumen_distingue_pendientes_y_fallos(self):
         with tempfile.TemporaryDirectory() as tmp:
