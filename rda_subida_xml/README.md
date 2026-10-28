@@ -430,3 +430,21 @@ Los lanzamientos de Chrome en ARIS y descarga de XML usan
 `chromium_sandbox=True`, como ChatGPT, para evitar el aviso de Chrome
 por `--no-sandbox`. Esa advertencia era independiente del fallo por
 acentos. No se registran ni incorporan secretos al repositorio.
+
+### Cierre del resultado de ARIS (26-10-2026)
+
+Tras el informe `BBVA - Importar BPMN`, ARIS muestra el mensaje modal
+`El informe está completo.` (o el rechazo conocido
+`El fichero seleccionado no es válido`). El RDA conserva el estado
+y ahora pulsa exactamente una vez el botón `Aceptar` del modal activo:
+`div[role="dialog"][aria-hidden="false"] .modal-footer a[aria-label="Aceptar"]`.
+Espera a que desaparezca el modal y falla en modo seguro si no puede
+confirmar el cierre. `informe_completo` NO equivale a confirmar por sí
+solo que existe el modelo en la carpeta final.
+
+También cierra pestañas adicionales del mismo servidor ARIS que se hayan
+abierto después de lanzar el informe; nunca cierra la pestaña principal,
+pestañas anteriores o URLs de otros sitios. Si una pestaña no se puede
+identificar como propia, la deja abierta y registra el aviso. No se
+han implementado aún copiar/pegar/mover/renombrar ni un segundo informe;
+esas operaciones irán en otro módulo.

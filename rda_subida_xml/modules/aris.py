@@ -491,8 +491,61 @@ def _resultado(page, cfg):
         LOG.warning('ARIS rechazó el archivo XML (mensaje genérico)')
     else:
         LOG.info('ARIS confirmó finalización del informe de importación')
+    _cerrar_popup_resultado(dlg, estado, cfg)
     return {'estado': estado, 'importado': None if estado == 'informe_completo' else False,
             'mensaje': FILE_ERROR if estado == 'xml_rechazado' else REPORT_DONE}
+
+
+def _cerrar_popup_resultado(dialogo, estado, cfg):
+    """Cerrar el mensaje terminal ya clasificado (éxito o rechazo) una sola vez.
+
+    El HTML real usa un message-dialog y un enlace Aceptar en modal-footer.
+    Se vuelve a comprobar el estado antes del clic para no aceptar otro modal.
+    """
+    if not dialogo.is_visible() or clasificar_mensaje(dialogo.inner_text()) != estado:
+        raise ArisNoConfirmado('El popup final cambió antes de aceptar; revisar ARIS')
+    aceptar = dialogo.locator('.modal-footer a[aria-label="Aceptar"]')
+    if aceptar.count() != 1 or not aceptar.is_visible() or not aceptar.is_enabled() or (
+        aceptar.get_attribute('aria-disabled') == 'true'
+    ):
+        raise ArisNoConfirmado('Aceptar final ARIS no disponible; revisar resultado')
+    aceptar.click()
+    try:
+        dialogo.wait_for(
+            state='hidden', timeout=int(cfg.get('aris_timeout_paso_ms', 45000))
+        )
+    except PlaywrightTimeout as exc:
+        raise ArisNoConfirmado('ARIS no cerró el popup final tras Aceptar') from exc
+    LOG.info('ARIS: popup final de %s cerrado mediante Aceptar', estado)
+
+
+def _cerrar_pestanas_importacion(contexto, principal, anteriores, aris_url):
+    """Cerrar solo pestañas ARIS creadas tras lanzar el informe.
+
+    Jamás tocar la pestaña principal, las preexistentes ni sitios ajenos.
+    Ante origen o ruta ambiguos se deja la pestaña para revisión manual.
+    """
+    hostname = urlsplit(aris_url).hostname
+    cerradas = 0
+    for tab in list(contexto.pages):
+        if tab is principal or any(tab is antigua for antigua in anteriores):
+            continue
+        if tab.is_closed():
+            continue
+        destino = urlsplit(tab.url)
+        if destino.scheme != 'https' or destino.hostname != hostname:
+            LOG.warning('ARIS: pestaña nueva ajena/no cargada; no se cierra')
+            continue
+        if 'repository/' in destino.fragment.lower():
+            LOG.warning('ARIS: pestaña nueva de repositorio; no se cierra sin identificar')
+            continue
+        try:
+            tab.close()
+            cerradas += 1
+            LOG.info('ARIS: pestaña adicional del modelo cerrada')
+        except Exception as exc:
+            LOG.warning('ARIS: no se pudo cerrar pestaña adicional: %s', type(exc).__name__)
+    return cerradas
 
 
 def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
@@ -534,6 +587,7 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
                 return {'estado': 'cancelado', 'importado': False}
             if al_iniciar:
                 al_iniciar()
+            pestanas_anteriores = tuple(ctx.pages)
             page.locator(LAUNCH).click()
             LOG.info('Informe ARIS lanzado')
             etapa_archivo = adjuntar_xml(page, xml, cfg)
@@ -545,6 +599,10 @@ def procesar_aris(xml: Path, cfg: dict, perfil: Path, al_iniciar=None):
             else:
                 raise ArisNoConfirmado('Resultado inesperado al seleccionar fichero')
             resultado = _resultado(page, cfg)
+            cerradas = _cerrar_pestanas_importacion(
+                ctx, page, pestanas_anteriores, url
+            )
+            LOG.info('ARIS: limpieza final completada; pestañas extra cerradas=%s', cerradas)
             if cfg.get('mantener_chrome_abierto', True):
                 input('Revisa el resultado en Chrome. Enter para cerrar... ')
             return resultado
