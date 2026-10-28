@@ -12,6 +12,7 @@
   "aris_url": "",
   "modo_aris": "inspeccionar",
   "headless": false,
+  "max_pausas_login": 3,
   "timeout_ms": 120000,
   "selector_archivo": "",
   "selector_importar": "",

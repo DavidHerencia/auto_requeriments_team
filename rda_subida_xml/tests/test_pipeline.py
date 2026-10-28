@@ -111,12 +111,43 @@ class TestPipeline(unittest.TestCase):
                 'nombre_proceso': 'Prueba/Proceso', 'xml': '<definitions/>'
             }
             otro = {**registro, 'id_solicitud': 'S2',
-                    'nombre_proceso': 'Prueba\Proceso'}
+                    'nombre_proceso': r'Prueba\Proceso'}
             ruta.write_text(json.dumps({
                 'registros': [registro, otro]
             }), encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'duplicado'):
                 pipeline._seleccionar(ruta, 4, None)
+
+
+    def test_no_reimportar_si_existe_lanzamiento_incierto(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / 'data'
+            raw = data / 'exportaciones' / 'lote_prueba.json'
+            raw.parent.mkdir(parents=True)
+            raw.write_text(json.dumps({
+                'version': 1, 'registros': [
+                    {'id_solicitud': 'S1', 'id_n5': 'N1',
+                     'nombre_proceso': 'Prueba', 'xml': '<definitions/>'}
+                ]
+            }), encoding='utf-8')
+            reporte = data / 'reportes' / 'pipeline_lote_prueba.json'
+            reporte.parent.mkdir(parents=True)
+            reporte.write_text(json.dumps({
+                'version': 1, 'registros': [{
+                    'id_solicitud': 'S1', 'estado_final': 'requiere_revision',
+                    'intentos_aris': [{
+                        'pasada': 'original', 'estado': 'requiere_revision',
+                        'lanzado_utc': '2026-10-28T00:00:00Z'
+                    }]
+                }],
+                'etapas_completadas': [], 'estado': 'requiere_revision',
+                'resumen': {}
+            }), encoding='utf-8')
+            cfg = {'modo_chatgpt': 'ejecutar', 'modo_aris': 'ejecutar',
+                   'aris_grupo_informes': '03 PROYECTOS'}
+            with patch.object(pipeline, 'DATA', data):
+                with self.assertRaisesRegex(RuntimeError, 'resultado incierto'):
+                    pipeline.ejecutar_pipeline(cfg, limite=1, archivo=raw)
 
     def test_resumen_distingue_pendientes_y_fallos(self):
         with tempfile.TemporaryDirectory() as tmp:

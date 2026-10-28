@@ -19,6 +19,18 @@ def falta_sesion(page, servicio):
             return True
         if servicio == 'aris' and page.locator('#Copernicus_GWT_Loginform_holder:visible').count():
             return True
+        # El login corporativo también puede mostrarse en un iframe SSO.
+        for frame in page.frames:
+            if frame is page.main_frame:
+                continue
+            try:
+                frame_host = (urlsplit(frame.url).hostname or '').lower()
+                if frame_host in HOSTS_LOGIN or frame_host.startswith('login.'):
+                    return True
+                if frame.locator('input[type="password"]:visible').count():
+                    return True
+            except Exception:
+                continue
     except Exception:
         return False
     return False

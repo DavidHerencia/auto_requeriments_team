@@ -237,6 +237,12 @@ def _pasada_aris(cfg, ruta, doc, etapa, etiqueta, seleccion, por_id):
                 reg['motivo'] = type(exc).__name__
                 entrada['estado'] = 'requiere_revision'
                 LOG.exception('ARIS: resultado incierto para %s; sin reimportación', sid)
+                if entrada.get('lanzado_utc'):
+                    # Nunca avanzar mientras el informe anterior podría seguir ejecutándose.
+                    raise RuntimeError(
+                        'Importación ARIS iniciada sin resultado confirmable; '
+                        'detener lote y revisar manualmente antes de continuar'
+                    ) from exc
             finally:
                 _guardar_reporte(ruta, doc)
     _marcar_etapa(ruta, doc, etapa)
@@ -261,6 +267,18 @@ def ejecutar_pipeline(cfg, limite=4, ids=None, archivo=None):
     reporte = DATA / 'reportes' / ('pipeline_' + lote.stem + '.json')
     doc = _reporte_inicial(reporte, elegidos)
     _guardar_reporte(reporte, doc)
+    inciertos = [
+        r['id_solicitud'] for r in doc['registros']
+        if any(x.get('lanzado_utc') and x['estado'] in (
+            'aris_iniciado', 'requiere_revision', 'preparando'
+        ) for x in r['intentos_aris'])
+    ]
+    if inciertos:
+        raise RuntimeError(
+            'Importaciones ARIS de resultado incierto en checkpoint: '
+            + ', '.join(inciertos) +
+            '. Verificar manualmente antes de reanudar; no reimportar.'
+        )
     seleccion = [r['id_solicitud'] for r in elegidos]
 
     print('Se procesarán', len(seleccion), 'XML(s).')
