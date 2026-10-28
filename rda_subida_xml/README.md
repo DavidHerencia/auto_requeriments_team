@@ -539,21 +539,23 @@ Reemplazar los cuatro marcadores por IDs reales **que aún no estén
 importados en ARIS**. Sin `--ids`, usa los primeros cuatro registros
 del archivo; revisar cuáles son antes de autorizar el lote.
 
-### GPT HERO: enviar mediante botón y verificar el envío (28-10-2026)
+### GPT HERO: Enter primero, botón como respaldo seguro (28-10-2026)
 
-El log mostraba `Enter pulsado` pero en Chrome el mensaje permanecía en el
-editor. Con `@BPMN ARIS XML Repair`, Enter puede seleccionar una sugerencia
-sin enviar el XML. Ahora `_enviar()` utiliza **exclusivamente** el botón
-visible y único `[data-testid="send-button"]` (configurable mediante
-`gpt_enviar_selector`). Hace exactamente un clic y espera una señal del
-DOM: editor vacío o primera respuesta nueva. Si la señal no llega en
-`timeout_envio_ms`, registra `ResultadoIncierto` sin hacer un segundo
-clic ni un Enter de respaldo. El flujo previo de adjuntar, esperar carga,
-leer respuesta, recuperar XML y postprocesar **no cambia**. Los códigos
-HTTP 403 no identifican por sí solos si falló el envío; se investigan si
-persisten tras esta corrección.
+El prototipo validado envía con `Enter`, por lo que se conserva como
+**primera opción**. Con un prompt que contiene `@BPMN ARIS XML Repair`,
+Enter puede escoger una sugerencia sin enviar. Después de Enter, el robot
+espera un evento visible del DOM (respuesta nueva, turno de usuario nuevo,
+generación iniciada o editor vacío), con límite
+`gpt_timeout_enter_ms` (por defecto 10000 ms). Si ocurre, continúa SIN clic.
 
-En una prueba interrumpida con Ctrl+C antes de obtener respuesta, no hubo
-importación ARIS. Una nueva ejecución `python app.py --fase pipeline
---limite 4` crea su propio lote y checkpoint; no necesita eliminar los
-anteriores. El perfil de Chrome sigue siendo el mismo.
+Si se agota ese plazo sin señal, inspecciona de nuevo el editor, el botón
+Enviar y los turnos: **solo** cuando el texto permanece pendiente, el botón
+es único/habilitado y no hay respuesta/generación, hace un clic de respaldo
+en `gpt_enviar_selector` (por defecto `[data-testid="send-button"]`).
+Después de ese clic espera la misma señal DOM de envío. En caso de
+incertidumbre, aborta el registro sin reintento ciego ni doble envío.
+
+El adjunto, la captura de XML, la recuperación de respuesta y el
+postprocesamiento no se modificaron. Las pruebas cubren Enter con éxito,
+respaldo por clic, estado ambiguo, error de Enter y clic sin confirmación.
+No se ha validado todavía esta variante en el Chrome corporativo real.

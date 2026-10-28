@@ -511,78 +511,145 @@ def registrar_flags_chrome(contexto):
         pagina.close()
 
 
-def _enviar(page, config, prompt, archivo=None):
-    """Enviar por el botón real, UNA vez, y confirmar transición observable.
+# Señales positivas: el mensaje salió del editor, apareció un turno nuevo
+# o ChatGPT está generando. No inferir envío a partir de haber pulsado Enter.
+SENAL_ENVIO_JS = r"""({editorSelector, responseSelector, userSelector,
+                      previousResponses, previousUsers}) => {
+    if (document.querySelectorAll(responseSelector).length > previousResponses)
+        return 'respuesta_nueva';
+    if (document.querySelectorAll(userSelector).length > previousUsers)
+        return 'turno_usuario_nuevo';
+    const stop = [...document.querySelectorAll('[data-testid="stop-button"]')]
+        .some(el => {
+            const r = el.getBoundingClientRect();
+            const css = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && css.visibility !== 'hidden'
+                && css.display !== 'none';
+        });
+    if (stop) return 'generacion_iniciada';
+    const editores = document.querySelectorAll(editorSelector);
+    if (editores.length !== 1) return false;
+    const texto = (editores[0].innerText || editores[0].textContent || '')
+        .replace(/[\u200b\u200c\u200d]/g, '').trim();
+    return texto === '' ? 'editor_vaciado' : false;
+}"""
 
-    Con menciones @ de skills, Enter puede escoger un elemento del menú
-    en vez de enviar el mensaje. Por eso nunca se usa Enter para enviar.
-    Un click sin respuesta tampoco garantiza envío: comprobar el DOM.
+PENDIENTE_ENVIO_JS = r"""({editorSelector, responseSelector, userSelector,
+                         sendSelector, previousResponses, previousUsers}) => {
+    if (document.querySelectorAll(responseSelector).length > previousResponses
+        || document.querySelectorAll(userSelector).length > previousUsers)
+        return {pendiente: false, motivo: 'turno_nuevo'};
+    const editores = document.querySelectorAll(editorSelector);
+    const botones = document.querySelectorAll(sendSelector);
+    const stop = [...document.querySelectorAll('[data-testid="stop-button"]')]
+        .some(el => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        });
+    if (editores.length !== 1 || botones.length !== 1 || stop)
+        return {pendiente: false, motivo: 'interfaz_ambigua'};
+    const texto = (editores[0].innerText || editores[0].textContent || '')
+        .replace(/[\u200b\u200c\u200d]/g, '').trim();
+    const boton = botones[0];
+    const rect = boton.getBoundingClientRect();
+    const css = getComputedStyle(boton);
+    const habilitado = !boton.disabled
+        && boton.getAttribute('aria-disabled') !== 'true'
+        && rect.width > 0 && rect.height > 0
+        && css.visibility !== 'hidden' && css.display !== 'none';
+    return {pendiente: !!texto && habilitado,
+            motivo: texto && habilitado ? 'mensaje_sigue_en_editor'
+                                        : 'envio_no_confirmable'};
+}"""
+
+
+def _enviar(page, config, prompt, archivo=None):
+    """Enter primero; clic como respaldo SOLO si el mensaje sigue pendiente.
+
+    No se permiten dos envíos: un estado ambiguo bloquea el respaldo.
+    La espera se resuelve por señales DOM, con plazo máximo configurable.
     """
     editor = _esperar_editor(page, config)
     anteriores = _respuestas_asistente(page, config).count()
-    usuarios = page.locator(
+    selector_usuarios = (
         '[data-chatgpt-turn-key$=":user"], [data-turn-key$=":user"]'
-    ).count()
+    )
+    usuarios = page.locator(selector_usuarios).count()
     if archivo:
         _esperar_adjunto(page, archivo, config)
     editor.fill(prompt)
     LOG.info('Prompt escrito; caracteres=%s adjunto=%s', len(prompt), bool(archivo))
 
     timeout = int(config.get('timeout_envio_ms', 30000))
-    selector_boton = _selector(config, 'gpt_enviar_selector', ENVIAR)
-    boton = page.locator(selector_boton)
-    try:
-        boton.wait_for(state='visible', timeout=timeout)
-        if boton.count() != 1:
-            raise ResultadoIncierto(
-                f'Botón Enviar ambiguo: se encontraron {boton.count()} controles'
-            )
-        # Playwright espera automáticamente habilitación/visibilidad.
-        # Sólo este click puede iniciar el envío: no hay Enter de respaldo.
-        boton.click(timeout=timeout)
-        LOG.info('Click único en botón Enviar; verificando aceptación del mensaje')
-    except ResultadoIncierto:
-        raise
-    except Exception as exc:
-        LOG.warning('Envío GPT no confirmado: botón Enviar no accionable (%s)',
-                    type(exc).__name__)
-        raise ResultadoIncierto(
-            'No se pudo accionar el botón Enviar con certeza; no reenviar'
-        ) from exc
-
-    # Esperar un evento de UI real: el editor se vacía o comienza una nueva
-    # respuesta de HERO. El botón pulsado por sí solo NO es confirmación.
+    espera_enter = min(int(config.get('gpt_timeout_enter_ms', 10000)), timeout)
+    if espera_enter <= 0 or timeout <= 0:
+        raise ValueError('Timeout de envío GPT debe ser positivo')
     selector_editor = _selector(config, 'gpt_editor_selector', EDITOR)
+    selector_boton = _selector(config, 'gpt_enviar_selector', ENVIAR)
     selector_respuestas = config.get('gpt_respuesta_selector', '')
     if not selector_respuestas or selector_respuestas in (
         TURNO_LEGACY, TURNO_LEGACY_2, TURNO_ROLE, TURNO, TURNO_ALTERNATIVO
     ):
         selector_respuestas = TURNO
+    estado_arg = {
+        'editorSelector': selector_editor,
+        'responseSelector': selector_respuestas,
+        'userSelector': selector_usuarios,
+        'previousResponses': anteriores,
+        'previousUsers': usuarios,
+    }
+
+    try:
+        editor.press('Enter', timeout=timeout)
+    except Exception as exc:
+        # La excepción no confirma si el navegador alcanzó a enviar.
+        LOG.warning('GPT: Enter de resultado incierto (%s), sin clic de respaldo',
+                    type(exc).__name__)
+        raise ResultadoIncierto(
+            'Enter falló sin poder confirmar si se envió; no duplicar'
+        ) from exc
+
+    LOG.info('GPT: Enter pulsado; verificando envío antes de cualquier respaldo')
     try:
         senal = page.wait_for_function(
-            """({editorSelector, responseSelector, previous}) => {
-                const respuestas = document.querySelectorAll(responseSelector).length;
-                if (respuestas > previous) return 'respuesta_nueva';
-                const editores = [...document.querySelectorAll(editorSelector)];
-                if (editores.length !== 1) return false;
-                const texto = (editores[0].innerText || editores[0].textContent || '')
-                    .replace(/[\\u200b\\u200c\\u200d]/g, '').trim();
-                return texto === '' ? 'editor_vaciado' : false;
-            }""",
-            arg={
-                'editorSelector': selector_editor,
-                'responseSelector': selector_respuestas,
-                'previous': anteriores
-            },
-            timeout=timeout
+            SENAL_ENVIO_JS, arg=estado_arg, timeout=espera_enter
+        ).json_value()
+        LOG.info('GPT: Enter realizó el envío, señal=%s; sin clic adicional', senal)
+        return _nuevo_turno(page, config, anteriores, usuarios)
+    except PlaywrightTimeout:
+        # Llegó el plazo máximo para observar un evento, NO una pausa fija.
+        # Solo hacer clic si la UI confirma que el texto SIGUE sin enviarse,
+        # el botón es único y accionable, y no hay respuesta/generación nueva.
+        LOG.warning('GPT: Enter no produjo señal de envío; comprobando respaldo')
+
+    observacion = page.evaluate(
+        PENDIENTE_ENVIO_JS, {**estado_arg, 'sendSelector': selector_boton}
+    )
+    if not isinstance(observacion, dict) or not observacion.get('pendiente'):
+        motivo = observacion.get('motivo') if isinstance(observacion, dict) else 'sin_estado'
+        raise ResultadoIncierto(
+            f'Enter sin confirmación y sin evidencia de mensaje pendiente '
+            f'({motivo}); no usar clic para evitar doble envío'
+        )
+    boton = page.locator(selector_boton)
+    if boton.count() != 1 or not boton.is_visible() or not boton.is_enabled():
+        raise ResultadoIncierto('Botón de respaldo no visible/único/habilitado')
+    LOG.info('GPT: mensaje sigue pendiente; clic único de respaldo en Enviar')
+    try:
+        boton.click(timeout=timeout)
+    except Exception as exc:
+        raise ResultadoIncierto(
+            'Clic de respaldo incierto; no repetir la acción'
+        ) from exc
+    try:
+        senal = page.wait_for_function(
+            SENAL_ENVIO_JS, arg=estado_arg, timeout=timeout
         ).json_value()
     except PlaywrightTimeout as exc:
-        LOG.error('ChatGPT no confirmó transición del editor tras click Enviar')
         raise ResultadoIncierto(
-            'Después de Enviar, el editor no se vació y no apareció respuesta; '
-            'no se reenviará automáticamente'
+            'Sin confirmación DOM tras clic de respaldo; no reenviar'
         ) from exc
-    LOG.info('GPT: señal posterior al clic observada: %s; esperando respuesta', senal)
+    LOG.info('GPT: respaldo confirmado, señal=%s; esperando respuesta', senal)
     return _nuevo_turno(page, config, anteriores, usuarios)
 
 
