@@ -71,7 +71,11 @@ def es_respuesta_incompleta(texto):
 
 
 class ResultadoIncierto(RuntimeError):
-    """No se pudo verificar resultado; prohibido reintentar envio automaticamente."""
+    """Estado no confirmado; informar sin bloquear los demás registros."""
+
+
+class EnvioNoRealizado(ResultadoIncierto):
+    """El prompt permanece sin enviarse tras los mecanismos de respaldo."""
 
 class ErrorPostprocesamiento(ValueError):
     """XML valido capturado, pero no se pudo aplicar la modificacion BPMN."""
@@ -380,7 +384,7 @@ def _nuevo_turno(page, config, anteriores, usuarios_antes):
     El conteo de turnos de usuario NO es condicion necesaria: la version
     actual de HERO puede mostrar el mensaje sin data-turn-key='...:user'.
     """
-    limite = time.monotonic() + max(900000, int(config.get('timeout_respuesta_ms', 900000))) / 1000
+    limite = time.monotonic() + int(config.get('timeout_respuesta_ms', 480000)) / 1000
     visto_respuesta = False
     generacion_vista = False
     estado_anterior = None
@@ -580,10 +584,13 @@ PENDIENTE_ENVIO_JS = r"""({editorSelector, responseSelector, userSelector,
 }"""
 
 def _enviar(page, config, prompt, archivo=None):
-    """Enter primero; clic como respaldo SOLO si el mensaje sigue pendiente.
+    """Enter primero, clic de respaldo si el mensaje sigue sin enviar.
 
-    No se permiten dos envíos: un estado ambiguo bloquea el respaldo.
-    La espera se resuelve por señales DOM, con plazo máximo configurable.
+    Primero Enter, luego clic si está disponible. Si un menú @ bloquea
+    el botón, se cierra con Escape y solo entonces se permite otro Enter.
+    Nunca repetir una acción si ya existe evidencia de envío.
+    Si ninguno surte efecto, se registra y el lote continúa:
+    el pipeline hará su único reintento GPT al acabar la primera pasada.
     """
     editor = _esperar_editor(page, config)
     anteriores = _respuestas_asistente(page, config).count()
@@ -598,13 +605,9 @@ def _enviar(page, config, prompt, archivo=None):
     editor.fill(prompt)
     LOG.info('Prompt escrito; caracteres=%s adjunto=%s', len(prompt), bool(archivo))
 
-    # Un config.local.json antiguo podría conservar máximos de 30s/10s.
-    # Estos plazos son respaldos: la señal del DOM siempre termina antes.
-    timeout = max(120000, int(config.get('timeout_envio_ms', 120000)))
-    espera_enter = min(max(60000, int(config.get('gpt_timeout_enter_ms', 60000))),
+    timeout = max(60000, int(config.get('timeout_envio_ms', 60000)))
+    espera_enter = min(max(20000, int(config.get('gpt_timeout_enter_ms', 20000))),
                        timeout)
-    if espera_enter <= 0 or timeout <= 0:
-        raise ValueError('Timeout de envío GPT debe ser positivo')
     selector_editor = _selector(config, 'gpt_editor_selector', EDITOR)
     selector_boton = _selector(config, 'gpt_enviar_selector', ENVIAR)
     selector_respuestas = config.get('gpt_respuesta_selector', '')
@@ -620,70 +623,106 @@ def _enviar(page, config, prompt, archivo=None):
         'previousUsers': usuarios,
     }
 
+    def confirmacion(plazo, accion):
+        try:
+            señal = page.wait_for_function(
+                SENAL_ENVIO_JS, arg=estado_arg, timeout=plazo
+            ).json_value()
+            LOG.info('GPT: envio confirmado tras %s: %s', accion, señal)
+            return True
+        except PlaywrightTimeout:
+            LOG.warning('GPT: sin evento de envio tras %s; inspeccionando editor', accion)
+            return False
+
+    def observar():
+        # Solo diagnósticos resumidos; no se registra prompt ni XML.
+        datos = page.evaluate(
+            PENDIENTE_ENVIO_JS,
+            {**estado_arg, 'sendSelector': selector_boton}
+        )
+        if not isinstance(datos, dict):
+            raise ResultadoIncierto('Inspección del composer no devolvió estado válido')
+        LOG.info('GPT: diagnóstico de composer: %s', datos)
+        return datos
+
+    def concluir():
+        return _nuevo_turno(page, config, anteriores, usuarios)
+
     try:
         editor.press('Enter', timeout=timeout)
     except Exception as exc:
-        # La excepción no confirma si el navegador alcanzó a enviar.
-        LOG.warning('GPT: Enter de resultado incierto (%s), sin clic de respaldo',
-                    type(exc).__name__)
-        raise ResultadoIncierto(
-            'Enter falló sin poder confirmar si se envió; no duplicar'
-        ) from exc
+        # Una excepción de Playwright puede ocurrir DESPUÉS del evento.
+        LOG.warning('GPT: Enter no confirmado por Playwright (%s)', type(exc).__name__)
+    else:
+        LOG.info('GPT: Enter pulsado; verificando envío')
+        if confirmacion(espera_enter, 'Enter'):
+            return concluir()
 
-    LOG.info('GPT: Enter pulsado; verificando envío antes de cualquier respaldo')
-    try:
-        senal = page.wait_for_function(
-            SENAL_ENVIO_JS, arg=estado_arg, timeout=espera_enter
-        ).json_value()
-        LOG.info('GPT: Enter realizó el envío, señal=%s; sin clic adicional', senal)
-        return _nuevo_turno(page, config, anteriores, usuarios)
-    except PlaywrightTimeout:
-        # Llegó el plazo máximo para observar un evento, NO una pausa fija.
-        # Solo hacer clic si la UI confirma que el texto SIGUE sin enviarse,
-        # el botón es único y accionable, y no hay respuesta/generación nueva.
-        LOG.warning('GPT: Enter no produjo señal de envío; comprobando respaldo')
+    estado = observar()
+    if estado.get('motivo') in ('turno_nuevo', 'generacion_iniciada', 'editor_vaciado'):
+        LOG.info('GPT: envio detectado en comprobacion tardia; sin duplicar')
+        return concluir()
 
-    try:
-        observacion = page.evaluate(
-            PENDIENTE_ENVIO_JS, {**estado_arg, 'sendSelector': selector_boton}
-        )
-    except Exception as exc:
+    # Un menú de mención @ puede consumir Enter e impedir que aparezca
+    # el botón Enviar. Escape cierra ese menú; NO envía mensajes.
+    if estado.get('motivo') in ('boton_no_habilitado', 'boton_ambiguo'):
+        if estado.get('caracteresPendientes', 0) > 0:
+            LOG.info('GPT: prompt pendiente con menú/botón no listo; cerrando menú con Escape')
+            editor.press('Escape', timeout=10000)
+            estado = observar()
+            if estado.get('motivo') in ('turno_nuevo', 'generacion_iniciada',
+                                        'editor_vaciado'):
+                return concluir()
+
+    if (not estado.get('pendiente')
+            and estado.get('caracteresPendientes', 0) > 0
+            and estado.get('motivo') in ('boton_no_habilitado', 'boton_ambiguo')):
+        # Último recurso si el botón sigue no accionable tras Escape.
+        # El prompt permanece escrito y no existe un turno nuevo.
+        LOG.info('GPT: sin botón tras Escape, nuevo Enter con comprobación DOM')
+        try:
+            editor.press('Enter', timeout=timeout)
+        except Exception as exc:
+            LOG.warning('GPT: Enter de respaldo incierto (%s)', type(exc).__name__)
+        else:
+            if confirmacion(espera_enter, 'Enter de respaldo'):
+                return concluir()
+        estado = observar()
+        if estado.get('motivo') in ('turno_nuevo', 'generacion_iniciada',
+                                    'editor_vaciado'):
+            return concluir()
+
+    if not estado.get('pendiente'):
+        if estado.get('caracteresPendientes', 0) > 0:
+            raise EnvioNoRealizado(
+                'GPT: prompt sin enviar; ni Enter ni botón disponibles'
+            )
         raise ResultadoIncierto(
-            'No se pudo inspeccionar el editor tras Enter; no arriesgar doble envío'
-        ) from exc
-    # Solo metadatos seguros: NUNCA escribir el prompt o XML en el log.
-    LOG.warning('GPT: estado del editor después de Enter: %s', observacion)
-    if isinstance(observacion, dict) and observacion.get('motivo') in (
-        'turno_nuevo', 'generacion_iniciada', 'editor_vaciado'
-    ):
-        LOG.info('GPT: envío reconocido tras observación tardía; sin clic')
-        return _nuevo_turno(page, config, anteriores, usuarios)
-    if not isinstance(observacion, dict) or not observacion.get('pendiente'):
-        motivo = observacion.get('motivo') if isinstance(observacion, dict) else 'sin_estado'
-        raise ResultadoIncierto(
-            f'Enter sin confirmación; diagnóstico={motivo}. '
-            'No abandonar ni reenviar el chat sin revisión'
+            'GPT: Enter sin confirmación; interfaz no segura para clic: '
+            + str(estado.get('motivo', 'desconocido'))
         )
     boton = page.locator(selector_boton)
     if boton.count() != 1 or not boton.is_visible() or not boton.is_enabled():
-        raise ResultadoIncierto('Botón de respaldo no visible/único/habilitado')
-    LOG.info('GPT: mensaje sigue pendiente; clic único de respaldo en Enviar')
+        raise EnvioNoRealizado(
+            'GPT: mensaje sigue en editor, pero botón Enviar no accionable'
+        )
+    LOG.info('GPT: prompt sigue pendiente; clic único de respaldo en Enviar')
     try:
         boton.click(timeout=timeout)
     except Exception as exc:
-        raise ResultadoIncierto(
-            'Clic de respaldo incierto; no repetir la acción'
-        ) from exc
-    try:
-        senal = page.wait_for_function(
-            SENAL_ENVIO_JS, arg=estado_arg, timeout=timeout
-        ).json_value()
-    except PlaywrightTimeout as exc:
-        raise ResultadoIncierto(
-            'Sin confirmación DOM tras clic de respaldo; no reenviar'
-        ) from exc
-    LOG.info('GPT: respaldo confirmado, señal=%s; esperando respuesta', senal)
-    return _nuevo_turno(page, config, anteriores, usuarios)
+        LOG.warning('GPT: clic de respaldo incierto (%s)', type(exc).__name__)
+    if confirmacion(timeout, 'clic de respaldo'):
+        return concluir()
+    estado = observar()
+    if estado.get('motivo') in ('turno_nuevo', 'generacion_iniciada', 'editor_vaciado'):
+        return concluir()
+    if estado.get('caracteresPendientes', 0) > 0:
+        raise EnvioNoRealizado(
+            'GPT: prompt siguió pendiente tras Enter y clic; reintentar en pasada GPT'
+        )
+    raise ResultadoIncierto(
+        'GPT: envío no confirmado tras clic; no se duplicará en el mismo chat'
+    )
 
 
 def _leer_resultado(page, nodo, config, temporal):
@@ -780,7 +819,9 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
             raise ValueError('Solicitud ausente en la exportación')
     seleccionados = [(i, r) for i, r in enumerate(trabajos)
                      if permitidos is None or r['id_solicitud'] in permitidos]
-    elegibles_retry = {'correccion_fallida', 'incompleto', 'postprocesamiento_pendiente'}
+    elegibles_retry = {'correccion_fallida', 'incompleto',
+                       'postprocesamiento_pendiente', 'envio_no_realizado',
+                       'requiere_revision'}
     if intento.startswith('aris_revision_'):
         elegibles_retry.add('correccion_finalizada')
     pendientes = [(i, r) for i, r in seleccionados
@@ -821,7 +862,6 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             resumir_red = instalar_diagnostico(page)
             interrumpido = False
-            error_incierto = None
             for n, (indice, registro) in enumerate(elegidos, 1):
                 base_archivo = nombre_seguro(registro['id_n5'], registro['nombre_proceso'])
                 final = base / 'corregidos' / subcarpeta / (base_archivo + '.xml')
@@ -887,25 +927,14 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
                         xml_capturado_ruta=str(capturado)
                     )
                     LOG.warning('Registro %s: XML capturado, requiere revisar la lane: %s', n, e)
+                except EnvioNoRealizado as e:
+                    registro.update(estado='envio_no_realizado', motivo=str(e))
+                    LOG.warning('Registro %s: prompt no enviado; se reintentará en '
+                                'la segunda pasada GPT, sin detener el lote', n)
                 except ResultadoIncierto as e:
-                    # Un envío puede seguir generándose; no navegar al siguiente
-                    # chat y destruir la única oportunidad de recuperar su XML.
-                    error_incierto = e
-                    interrumpido = True
                     registro.update(estado='requiere_revision', motivo=str(e))
-                    LOG.error('GPT: estado incierto de solicitud=%s. '
-                              'Lote pausado: no iniciar siguiente XML ni ARIS.',
-                              registro['id_solicitud'])
-                    if config.get('mantener_chrome_abierto', True):
-                        try:
-                            input(
-                                'GPT: envío sin resultado confirmable. Se detuvo '
-                                'el lote para no perder una respuesta en curso. '
-                                'Revisa el chat abierto; pulsa Enter aquí '
-                                'cuando termines la inspección: '
-                            )
-                        except (EOFError, KeyboardInterrupt):
-                            pass
+                    LOG.warning('Registro %s: resultado GPT incierto; continuar '
+                                'otros XML y registrar para reintento/reporte: %s', n, e)
                 except KeyboardInterrupt:
                     interrumpido = True
                     registro.update(
@@ -928,11 +957,6 @@ def procesar_registros(origen: Path, config: dict, base: Path, limite=1,
                 input('Chrome queda abierto para revisar. Pulsa Enter cuando quieras cerrarlo...')
         finally:
             ctx.close()
-    if error_incierto is not None and not confirmar:
-        raise ResultadoIncierto(
-            'Pipeline GPT detenido por envío de resultado incierto: '
-            + str(error_incierto)
-        ) from error_incierto
     if interrumpido and not confirmar:
         # En el pipeline, Ctrl+C debe detener TODAS las etapas, incluida ARIS.
         raise KeyboardInterrupt('Procesamiento GPT interrumpido; pipeline detenido')

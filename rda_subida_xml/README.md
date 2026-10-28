@@ -539,60 +539,43 @@ Reemplazar los cuatro marcadores por IDs reales **que aún no estén
 importados en ARIS**. Sin `--ids`, usa los primeros cuatro registros
 del archivo; revisar cuáles son antes de autorizar el lote.
 
-### GPT HERO: Enter primero, botón como respaldo seguro (28-10-2026)
+### GPT HERO: envío comprobado y reintentos sin detener el lote (28-10-2026)
 
-El prototipo validado envía con `Enter`, por lo que se conserva como
-**primera opción**. Con un prompt que contiene `@BPMN ARIS XML Repair`,
-Enter puede escoger una sugerencia sin enviar. Después de Enter, el robot
-espera un evento visible del DOM (respuesta nueva, turno de usuario nuevo,
-generación iniciada o editor vacío), con límite
-`gpt_timeout_enter_ms` (por defecto 10000 ms). Si ocurre, continúa SIN clic.
+El XML se adjunta como antes y el prompt conserva `@BPMN ARIS XML Repair`.
+`Enter` sigue siendo la primera opción de envío. Si no aparece señal del
+DOM (turno nuevo, generación iniciada o editor vacío), el robot comprueba
+si el prompt continúa en el editor. En ese caso usa el botón Enviar.
+Si el menú de mención `@` impide accionar el botón, usa `Escape` para
+cerrar el menú, vuelve a comprobar las señales y prueba el clic habilitado
+o un Enter de respaldo. **Cada acción se condiciona a no haber detectado
+ya el envío**: no se repiten a ciegas prompts posiblemente enviados.
 
-Si se agota ese plazo sin señal, inspecciona de nuevo el editor, el botón
-Enviar y los turnos: **solo** cuando el texto permanece pendiente, el botón
-es único/habilitado y no hay respuesta/generación, hace un clic de respaldo
-en `gpt_enviar_selector` (por defecto `[data-testid="send-button"]`).
-Después de ese clic espera la misma señal DOM de envío. En caso de
-incertidumbre, aborta el registro sin reintento ciego ni doble envío.
+Los límites máximos vuelven a ser moderados:
+- Verificación de Enter: **20 s** (antes 10 s).
+- Verificación de envío: **60 s** (antes 30 s).
+- Respuesta completa: **480 s / 8 min**, sin aumentar.
 
-El adjunto, la captura de XML, la recuperación de respuesta y el
-postprocesamiento no se modificaron. Las pruebas cubren Enter con éxito,
-respaldo por clic, estado ambiguo, error de Enter y clic sin confirmación.
-No se ha validado todavía esta variante en el Chrome corporativo real.
+Son límites y no pausas fijas; la respuesta al evento DOM termina cada
+espera de inmediato. Los nuevos mínimos de envío respetan
+`config.local.json` anteriores que todavía tengan 10/30 s; el timeout
+de respuesta sigue siendo configurable sin mínimo artificial de 15 min.
 
-### Preflight de sesiones y diagnóstico GPT (28-10-2026)
+Si no se produjo el envío o no existe certeza sobre él, el registro
+se marca `envio_no_realizado` o `requiere_revision` y **el lote sigue**
+con los siguientes XML. Al terminar la primera pasada GPT, ambas categorías
+se incluyen en **un solo reintento completo** desde el XML original.
+Si nuevamente falla, queda indicado en el reporte final; los XML
+que sí se corrigieron se importan en ARIS, como se diseñó.
 
-El pipeline comienza con `verificar_sesiones()` usando el **mismo perfil
-persistente de Chrome** para comprobar, en orden, Google Apps Script,
-GPT HERO y ARIS. En ARIS verifica también el contexto exacto de informes
-`03 PROYECTOS`; no lanza informes ni adjunta XML durante este paso.
-Si alguna aplicación redirige a `idp.*` o muestra un login, avisa al
-usuario y solicita `CONTINUAR` después de autenticarse. **No vuelve a
-navegar mientras el SSO esté redirigiendo.** Los chequeos posteriores a
-la apertura de cada etapa y entre importaciones ARIS siguen activos.
+Esto corrige dos problemas observados en el test del 28/10:
+- Los envíos de `S000000000629` y `S000000000659` no se confirmaron.
+- El estado `requiere_revision` no estaba entrando en el reintento GPT,
+  aunque las solicitudes `S000000000628` y `S000000000630` sí
+  terminaron correctamente GPT y ARIS a la primera.
 
-En el log del 28/10, solicitudes `S000000000628` y `S000000000630`
-produjeron XML válidos y ARIS confirmó `informe_completo`. Las solicitudes
-`S000000000629` y `S000000000659` terminaron en `ResultadoIncierto`
-**10 segundos después de Enter, antes de detectar una respuesta**; por
-ello el informe no permite afirmar si llegaron a enviarse. Esto no
-fue un timeout de generación; las otras dos respuestas llegaron en
-unos 25–30 s. Los errores HTTP 403 agregados no identifican su causa.
-
-Para reducir falsas detecciones, el margen máximo de Enter pasa a
-**60 s**, el límite de envío a **120 s** y el de respuesta completa
-**15 minutos**. Son límites máximos, **no esperas fijas**: la automatización
-avanza en cuanto el DOM indica el evento esperado. Estos mínimos se
-aplican incluso con `config.local.json` antiguo, sin exigir modificarlo.
-Si Enter no se confirma, se inspecciona el editor, el botón y la presencia
-de turnos/generación; el log registra solo metadatos, jamás el prompt o
-XML. Si el turno aparece tardíamente continúa sin duplicar; solo hace clic
-si el mensaje sigue pendiente y el botón Enviar está habilitado.
-
-Si tampoco existe una evidencia inequívoca, **se detiene el lote GPT y
-NO comienza ARIS**. Con `mantener_chrome_abierto=true` solicita inspección
-manual del chat antes de cerrar Chrome, conservando el checkpoint.
-Nunca reenvía automáticamente un prompt posiblemente procesado.
+Las confirmaciones de sesión Google/HERO/ARIS previas al lote y entre
+etapas se mantienen sin cambios. ARIS sigue siendo estrictamente serial
+y no se reimportan resultados ambiguos automáticamente.
 
 **Importante para nuevas pruebas:** los diagramas `S000000000628` y
 `S000000000630` ya fueron importados con éxito en el test informado.

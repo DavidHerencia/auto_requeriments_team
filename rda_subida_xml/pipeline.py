@@ -19,7 +19,8 @@ from modules.aris import SesionAris
 from modules.preflight import verificar_sesiones
 
 LOG = logging.getLogger(__name__)
-REINTENTABLES_GPT = {'correccion_fallida', 'incompleto', 'postprocesamiento_pendiente'}
+REINTENTABLES_GPT = {'correccion_fallida', 'incompleto', 'postprocesamiento_pendiente',
+                   'envio_no_realizado', 'requiere_revision'}
 CIERRE_OK = 'informe_completo'
 
 

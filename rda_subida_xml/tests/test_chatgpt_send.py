@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from modules.chatgpt import (
-    _enviar, INICIAL, ENVIAR, ResultadoIncierto, TURNO, procesar_registros
+    _enviar, INICIAL, ENVIAR, ResultadoIncierto, EnvioNoRealizado, TURNO, procesar_registros
 )
 
 
@@ -39,7 +39,7 @@ class TestEnvioHero(unittest.TestCase):
         self.assertEqual(resultado, 'RESPUESTA')
         self.assertIn('@BPMN ARIS XML Repair', INICIAL)
         self.editor.fill.assert_called_once_with(INICIAL)
-        self.editor.press.assert_called_once_with('Enter', timeout=120000)
+        self.editor.press.assert_called_once_with('Enter', timeout=60000)
         self.boton.click.assert_not_called()
         self.page.evaluate.assert_not_called()
         self.page.wait_for_function.assert_called_once()
@@ -50,7 +50,7 @@ class TestEnvioHero(unittest.TestCase):
         argumentos = self.page.wait_for_function.call_args.kwargs
         self.assertEqual(argumentos['arg']['responseSelector'], TURNO)
         self.assertEqual(argumentos['arg']['previousResponses'], 0)
-        self.assertEqual(argumentos['timeout'], 60000)
+        self.assertEqual(argumentos['timeout'], 20000)
 
     def test_sin_evento_enter_click_unico_si_editor_sigue_pendiente(self):
         self.page.wait_for_function.side_effect = [
@@ -62,8 +62,8 @@ class TestEnvioHero(unittest.TestCase):
         }
         resultado, nuevo = self._enviar()
         self.assertEqual(resultado, 'RESPUESTA')
-        self.editor.press.assert_called_once_with('Enter', timeout=120000)
-        self.boton.click.assert_called_once_with(timeout=120000)
+        self.editor.press.assert_called_once_with('Enter', timeout=60000)
+        self.boton.click.assert_called_once_with(timeout=60000)
         self.assertEqual(self.page.wait_for_function.call_count, 2)
         nuevo.assert_called_once()
 
@@ -77,19 +77,42 @@ class TestEnvioHero(unittest.TestCase):
         self.boton.click.assert_not_called()
         nuevo.assert_called_once()
 
-    def test_enter_sin_evento_y_boton_no_disponible_no_click(self):
+    def test_enter_con_menu_mention_escape_y_click_si_habilitado(self):
+        self.page.wait_for_function.side_effect = [
+            PlaywrightTimeout('sin evento Enter'),
+            MagicMock(json_value=MagicMock(return_value='respuesta_nueva'))
+        ]
+        self.page.evaluate.side_effect = [
+            {'pendiente': False, 'motivo': 'boton_no_habilitado',
+             'caracteresPendientes': len(INICIAL)},
+            {'pendiente': True, 'motivo': 'mensaje_sigue_en_editor',
+             'caracteresPendientes': len(INICIAL)}
+        ]
+        resultado, nuevo = self._enviar()
+        self.assertEqual(resultado, 'RESPUESTA')
+        self.editor.press.assert_any_call('Escape', timeout=10000)
+        self.boton.click.assert_called_once_with(timeout=60000)
+        nuevo.assert_called_once()
+
+    def test_enter_sin_evento_boton_inhabilitado_se_reporta(self):
         self.page.wait_for_function.side_effect = PlaywrightTimeout('sin evento')
-        self.page.evaluate.return_value = {
-            'pendiente': False, 'motivo': 'boton_no_habilitado',
-            'caracteresPendientes': 100
-        }
+        self.page.evaluate.side_effect = [
+            {'pendiente': False, 'motivo': 'boton_no_habilitado',
+             'caracteresPendientes': len(INICIAL)},
+            {'pendiente': False, 'motivo': 'boton_no_habilitado',
+             'caracteresPendientes': len(INICIAL)},
+            {'pendiente': False, 'motivo': 'boton_no_habilitado',
+             'caracteresPendientes': len(INICIAL)}
+        ]
         with patch('modules.chatgpt._esperar_editor', return_value=self.editor), \
              patch('modules.chatgpt._respuestas_asistente', return_value=self.respuestas), \
              patch('modules.chatgpt._nuevo_turno') as nuevo:
-            with self.assertRaisesRegex(ResultadoIncierto, 'boton_no_habilitado'):
+            with self.assertRaisesRegex(EnvioNoRealizado, 'ni Enter ni botón'):
                 _enviar(self.page, {}, INICIAL)
-            self.boton.click.assert_not_called()
-            nuevo.assert_not_called()
+        self.editor.press.assert_any_call('Escape', timeout=10000)
+        self.editor.press.assert_any_call('Enter', timeout=60000)
+        self.boton.click.assert_not_called()
+        nuevo.assert_not_called()
 
     def test_enter_sin_evento_y_boton_ambiguo_no_click(self):
         self.page.wait_for_function.side_effect = PlaywrightTimeout('sin evento')
@@ -97,7 +120,7 @@ class TestEnvioHero(unittest.TestCase):
         self.boton.count.return_value = 2
         with patch('modules.chatgpt._esperar_editor', return_value=self.editor), \
              patch('modules.chatgpt._respuestas_asistente', return_value=self.respuestas):
-            with self.assertRaisesRegex(ResultadoIncierto, 'no visible'):
+            with self.assertRaisesRegex(EnvioNoRealizado, 'no accionable'):
                 _enviar(self.page, {}, INICIAL)
         self.boton.click.assert_not_called()
 
@@ -107,22 +130,25 @@ class TestEnvioHero(unittest.TestCase):
         with patch('modules.chatgpt._esperar_editor', return_value=self.editor), \
              patch('modules.chatgpt._respuestas_asistente', return_value=self.respuestas), \
              patch('modules.chatgpt._nuevo_turno') as nuevo:
-            with self.assertRaisesRegex(ResultadoIncierto, 'no reenviar'):
+            with self.assertRaisesRegex(ResultadoIncierto, 'no se duplicará'):
                 _enviar(self.page, {}, INICIAL)
             self.editor.press.assert_called_once()
             self.boton.click.assert_called_once()
             nuevo.assert_not_called()
 
-    def test_si_enter_lanza_excepcion_no_click_por_incertidumbre(self):
-        self.editor.press.side_effect = PlaywrightTimeout('evento incierto')
-        with patch('modules.chatgpt._esperar_editor', return_value=self.editor), \
-             patch('modules.chatgpt._respuestas_asistente', return_value=self.respuestas):
-            with self.assertRaisesRegex(ResultadoIncierto, 'no duplicar'):
-                _enviar(self.page, {}, INICIAL)
-        self.boton.click.assert_not_called()
+    def test_si_enter_lanza_excepcion_se_inspecciona_antes_del_click(self):
+        self.editor.press.side_effect = PlaywrightTimeout('evento Enter incierto')
+        self.page.evaluate.return_value = {
+            'pendiente': True, 'motivo': 'mensaje_sigue_en_editor',
+            'caracteresPendientes': len(INICIAL)
+        }
+        resultado, nuevo = self._enviar()
+        self.assertEqual(resultado, 'RESPUESTA')
+        self.editor.press.assert_called_once()
+        self.boton.click.assert_called_once_with(timeout=60000)
+        nuevo.assert_called_once()
 
-
-    def test_envio_incierto_detiene_lote_y_guarda_checkpoint(self):
+    def test_envio_incierto_no_detiene_lote_y_guarda_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / 'data'
             archivo = base / 'exportaciones' / 'registros_prueba.json'
@@ -146,16 +172,15 @@ class TestEnvioHero(unittest.TestCase):
                  patch('modules.chatgpt._procesar_uno',
                        side_effect=ResultadoIncierto('interfaz ambigua')) as procesar:
                 playwright.return_value.__enter__.return_value.chromium.launch_persistent_context.return_value = ctx
-                with self.assertRaisesRegex(ResultadoIncierto, 'pipeline GPT detenido|Pipeline GPT detenido'):
-                    procesar_registros(
-                        archivo, {'mantener_chrome_abierto': False}, base,
-                        limite=None, confirmar=False
-                    )
-            self.assertEqual(procesar.call_count, 1)
+                procesar_registros(
+                    archivo, {'mantener_chrome_abierto': False}, base,
+                    limite=None, confirmar=False
+                )
+            self.assertEqual(procesar.call_count, 2)
             ruta = base / 'exportaciones' / 'procesados_registros_prueba.json'
             registros = json.loads(ruta.read_text(encoding='utf-8'))['registros']
             self.assertEqual(registros[0]['estado'], 'requiere_revision')
-            self.assertNotIn('estado', registros[1])
+            self.assertEqual(registros[1]['estado'], 'requiere_revision')
 
     def test_ctrl_c_en_gpt_detiene_pipeline_sin_seguir_a_aris(self):
         with tempfile.TemporaryDirectory() as tmp:

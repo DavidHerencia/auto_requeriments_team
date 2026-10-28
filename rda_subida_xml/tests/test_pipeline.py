@@ -36,7 +36,9 @@ class TestPipeline(unittest.TestCase):
                 for id_ in ids:
                     row = estado[id_]
                     ok = True
-                    if etiqueta == 'inicial' and id_ == 'S2':
+                    if etiqueta == 'inicial' and id_ in ('S2', 'S4'):
+                        ok = False
+                    if etiqueta == 'gpt_reintento_1' and id_ == 'S4':
                         ok = False
                     if etiqueta == 'aris_revision_1' and id_ == 'S3':
                         ok = False
@@ -48,8 +50,12 @@ class TestPipeline(unittest.TestCase):
                         row['estado'] = 'correccion_finalizada'
                         row['xml_corregido_ruta'] = str(destino)
                     else:
-                        row['estado'] = 'correccion_fallida'
-                        row['motivo'] = 'Sin XML'
+                        row['estado'] = (
+                            'requiere_revision' if etiqueta == 'inicial'
+                            else 'envio_no_realizado' if id_ == 'S4'
+                            else 'correccion_fallida'
+                        )
+                        row['motivo'] = 'Prompt no enviado o XML no disponible'
                         row.pop('xml_corregido_ruta', None)
                 salida = base / 'exportaciones' / ('procesados_' + origen.stem + '.json')
                 salida.parent.mkdir(parents=True, exist_ok=True)
@@ -94,15 +100,23 @@ class TestPipeline(unittest.TestCase):
             preflight.assert_called_once_with(cfg, data / 'perfil')
             reporte = json.loads(archivo.read_text(encoding='utf-8'))
             self.assertEqual(reporte['resumen']['total'], 4)
-            self.assertEqual(reporte['resumen']['pasaron'], 4)
-            self.assertEqual(reporte['resumen']['no_pasaron'], 0)
+            self.assertEqual(reporte['resumen']['pasaron'], 3)
+            self.assertEqual(reporte['resumen']['no_pasaron'], 1)
             self.assertEqual(llamadas_gpt, [
                 ('inicial', nombres),
-                ('gpt_reintento_1', ['S2']),
+                ('gpt_reintento_1', ['S2', 'S4']),
                 ('aris_revision_1', ['S3']),
                 ('aris_revision_2', ['S3']),
             ])
-            self.assertEqual(llamadas_aris, ['S1', 'S2', 'S3', 'S4', 'S3'])
+            self.assertEqual(llamadas_aris, ['S1', 'S2', 'S3', 'S3'])
+            estados = {r['id_solicitud']: r['estado_final']
+                       for r in reporte['registros']}
+            self.assertEqual(estados['S4'], 'no_generado')
+            self.assertEqual(estados['S1'], 'informe_completo')
+            self.assertEqual(
+                len(next(r for r in reporte['registros']
+                         if r['id_solicitud'] == 'S4')['intentos_gpt']), 2
+            )
             self.assertNotIn('<definitions/>', archivo.read_text(encoding='utf-8'))
 
     def test_ids_de_ejemplo_inexistentes_dan_error_ayuda(self):
