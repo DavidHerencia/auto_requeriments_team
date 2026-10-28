@@ -538,3 +538,22 @@ python app.py --fase pipeline --archivo data\exportaciones\registros_20261028T20
 Reemplazar los cuatro marcadores por IDs reales **que aún no estén
 importados en ARIS**. Sin `--ids`, usa los primeros cuatro registros
 del archivo; revisar cuáles son antes de autorizar el lote.
+
+### GPT HERO: enviar mediante botón y verificar el envío (28-10-2026)
+
+El log mostraba `Enter pulsado` pero en Chrome el mensaje permanecía en el
+editor. Con `@BPMN ARIS XML Repair`, Enter puede seleccionar una sugerencia
+sin enviar el XML. Ahora `_enviar()` utiliza **exclusivamente** el botón
+visible y único `[data-testid="send-button"]` (configurable mediante
+`gpt_enviar_selector`). Hace exactamente un clic y espera una señal del
+DOM: editor vacío o primera respuesta nueva. Si la señal no llega en
+`timeout_envio_ms`, registra `ResultadoIncierto` sin hacer un segundo
+clic ni un Enter de respaldo. El flujo previo de adjuntar, esperar carga,
+leer respuesta, recuperar XML y postprocesar **no cambia**. Los códigos
+HTTP 403 no identifican por sí solos si falló el envío; se investigan si
+persisten tras esta corrección.
+
+En una prueba interrumpida con Ctrl+C antes de obtener respuesta, no hubo
+importación ARIS. Una nueva ejecución `python app.py --fase pipeline
+--limite 4` crea su propio lote y checkpoint; no necesita eliminar los
+anteriores. El perfil de Chrome sigue siendo el mismo.

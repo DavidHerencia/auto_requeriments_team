@@ -512,23 +512,77 @@ def registrar_flags_chrome(contexto):
 
 
 def _enviar(page, config, prompt, archivo=None):
-    """Un solo Enter como en el prototipo; respuesta nueva confirma el envio."""
+    """Enviar por el botón real, UNA vez, y confirmar transición observable.
+
+    Con menciones @ de skills, Enter puede escoger un elemento del menú
+    en vez de enviar el mensaje. Por eso nunca se usa Enter para enviar.
+    Un click sin respuesta tampoco garantiza envío: comprobar el DOM.
+    """
     editor = _esperar_editor(page, config)
     anteriores = _respuestas_asistente(page, config).count()
-    usuarios = page.locator('[data-chatgpt-turn-key$=":user"], [data-turn-key$=":user"]').count()
+    usuarios = page.locator(
+        '[data-chatgpt-turn-key$=":user"], [data-turn-key$=":user"]'
+    ).count()
     if archivo:
         _esperar_adjunto(page, archivo, config)
     editor.fill(prompt)
     LOG.info('Prompt escrito; caracteres=%s adjunto=%s', len(prompt), bool(archivo))
+
+    timeout = int(config.get('timeout_envio_ms', 30000))
+    selector_boton = _selector(config, 'gpt_enviar_selector', ENVIAR)
+    boton = page.locator(selector_boton)
     try:
-        editor.press('Enter', timeout=20000)
+        boton.wait_for(state='visible', timeout=timeout)
+        if boton.count() != 1:
+            raise ResultadoIncierto(
+                f'Botón Enviar ambiguo: se encontraron {boton.count()} controles'
+            )
+        # Playwright espera automáticamente habilitación/visibilidad.
+        # Sólo este click puede iniciar el envío: no hay Enter de respaldo.
+        boton.click(timeout=timeout)
+        LOG.info('Click único en botón Enviar; verificando aceptación del mensaje')
+    except ResultadoIncierto:
+        raise
     except Exception as exc:
-        LOG.error('Fallo Enter; envio incierto: tipo=%s', type(exc).__name__)
-        raise ResultadoIncierto('No se pudo pulsar Enter de forma verificable') from exc
-    LOG.info('Enter pulsado una sola vez; observando respuesta NUEVA')
-    # No bloquear esperando [data-turn-key$=":user"]: en HERO el mensaje
-    # visible se envia aunque ese atributo no aparezca. La respuesta nueva
-    # constituye la confirmacion del envio.
+        LOG.warning('Envío GPT no confirmado: botón Enviar no accionable (%s)',
+                    type(exc).__name__)
+        raise ResultadoIncierto(
+            'No se pudo accionar el botón Enviar con certeza; no reenviar'
+        ) from exc
+
+    # Esperar un evento de UI real: el editor se vacía o comienza una nueva
+    # respuesta de HERO. El botón pulsado por sí solo NO es confirmación.
+    selector_editor = _selector(config, 'gpt_editor_selector', EDITOR)
+    selector_respuestas = config.get('gpt_respuesta_selector', '')
+    if not selector_respuestas or selector_respuestas in (
+        TURNO_LEGACY, TURNO_LEGACY_2, TURNO_ROLE, TURNO, TURNO_ALTERNATIVO
+    ):
+        selector_respuestas = TURNO
+    try:
+        senal = page.wait_for_function(
+            """({editorSelector, responseSelector, previous}) => {
+                const respuestas = document.querySelectorAll(responseSelector).length;
+                if (respuestas > previous) return 'respuesta_nueva';
+                const editores = [...document.querySelectorAll(editorSelector)];
+                if (editores.length !== 1) return false;
+                const texto = (editores[0].innerText || editores[0].textContent || '')
+                    .replace(/[\\u200b\\u200c\\u200d]/g, '').trim();
+                return texto === '' ? 'editor_vaciado' : false;
+            }""",
+            arg={
+                'editorSelector': selector_editor,
+                'responseSelector': selector_respuestas,
+                'previous': anteriores
+            },
+            timeout=timeout
+        ).json_value()
+    except PlaywrightTimeout as exc:
+        LOG.error('ChatGPT no confirmó transición del editor tras click Enviar')
+        raise ResultadoIncierto(
+            'Después de Enviar, el editor no se vació y no apareció respuesta; '
+            'no se reenviará automáticamente'
+        ) from exc
+    LOG.info('GPT: señal posterior al clic observada: %s; esperando respuesta', senal)
     return _nuevo_turno(page, config, anteriores, usuarios)
 
 
