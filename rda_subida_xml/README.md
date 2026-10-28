@@ -514,3 +514,27 @@ y deja `requiere_revision` en el reporte, sin pasar inmediatamente al
 siguiente XML. Al reiniciar, un lanzamiento incierto bloquea el proceso
 hasta verificar manualmente en ARIS qué sucedió. No se borra el checkpoint
 ni se confirma un reintento automáticamente.
+
+### Nota de diagnóstico: autenticación SSO e IDs reales (28-10-2026)
+
+Si Google Apps Script redirige al SSO corporativo, completar el login en
+**la misma ventana** y escribir `CONTINUAR`. El RDA espera ahora a que
+aparezcan los elementos del puente, **sin llamar otra vez a `page.goto()`**
+(mientras el SSO está redirigiendo, una segunda navegación interrumpe
+la primera). La espera depende de la señal de aplicación lista y usa
+el timeout existente solo como límite. No se registra ni guarda ninguna
+credencial.
+
+Los ejemplos `S001 S002 S003 S004` no son IDs reales del Sheet. Si
+`--ids` indica IDs ausentes, el programa muestra cuáles faltan y
+hasta ocho IDs disponibles en el JSON local. Ningún XML se envía a GPT
+ni a ARIS hasta confirmar una selección válida. Para reutilizar la
+exportación ya validada, sin descargar otra vez:
+
+```powershell
+python app.py --fase pipeline --archivo data\exportaciones\registros_20261028T204010_491073Z.json --limite 4 --ids ID_REAL_1 ID_REAL_2 ID_REAL_3 ID_REAL_4
+```
+
+Reemplazar los cuatro marcadores por IDs reales **que aún no estén
+importados en ARIS**. Sin `--ids`, usa los primeros cuatro registros
+del archivo; revisar cuáles son antes de autorizar el lote.

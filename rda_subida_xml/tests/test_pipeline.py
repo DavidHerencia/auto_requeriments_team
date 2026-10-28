@@ -103,6 +103,24 @@ class TestPipeline(unittest.TestCase):
             self.assertEqual(llamadas_aris, ['S1', 'S2', 'S3', 'S4', 'S3'])
             self.assertNotIn('<definitions/>', archivo.read_text(encoding='utf-8'))
 
+    def test_ids_de_ejemplo_inexistentes_dan_error_ayuda(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archivo = Path(tmp) / 'registros.json'
+            registros = [
+                {'id_solicitud': f'S00000000000{i}',
+                 'id_n5': f'N{i}', 'nombre_proceso': f'Prueba {i}',
+                 'xml': '<definitions/>'}
+                for i in range(1, 5)
+            ]
+            archivo.write_text(json.dumps({'version': 1, 'registros': registros}),
+                               encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'S001.*Ejemplos de IDs disponibles'):
+                pipeline._seleccionar(archivo, 4, ['S001', 'S002'])
+            self.assertEqual(
+                [r['id_solicitud'] for r in pipeline._seleccionar(archivo, 4, None)],
+                [r['id_solicitud'] for r in registros]
+            )
+
     def test_nombres_duplicados_bloquean_prevuelo(self):
         with tempfile.TemporaryDirectory() as tmp:
             ruta = Path(tmp) / 'registros.json'

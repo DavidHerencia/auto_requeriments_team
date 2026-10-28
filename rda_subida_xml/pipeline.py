@@ -52,7 +52,13 @@ def _seleccionar(origen, limite, ids):
         por_id = {r['id_solicitud']: r for r in registros}
         faltantes = set(ids) - set(por_id)
         if faltantes:
-            raise ValueError('IDs no presentes en la exportación')
+            ejemplos = [r['id_solicitud'] for r in registros[:8]]
+            raise ValueError(
+                'IDs no presentes en la exportación: ' + ', '.join(sorted(faltantes))
+                + '. Ejemplos de IDs disponibles: ' + ', '.join(ejemplos)
+                + '. Usa IDs reales del archivo descargado o elimina --ids '
+                  'para seleccionar los primeros --limite registros.'
+            )
         elegidos = [por_id[x] for x in ids]
     else:
         elegidos = registros[:limite]
@@ -282,6 +288,7 @@ def ejecutar_pipeline(cfg, limite=4, ids=None, archivo=None):
     seleccion = [r['id_solicitud'] for r in elegidos]
 
     print('Se procesarán', len(seleccion), 'XML(s).')
+    print('Solicitudes seleccionadas:', ', '.join(seleccion))
     print('ANTES de continuar, comprueba que NO hayan sido importados en ARIS.')
     print('Se usarán la cuenta y carpeta configuradas; informe:', cfg.get('aris_report_name'))
     print('Carpeta:', cfg.get('aris_grupo_informes'))
