@@ -30,7 +30,7 @@ REGLA_INCOMPLETO = (
 )
 INICIAL = (
     'Corrige el XML adjunto usando y siguiendo las instrucciones de '
-    '"BPMN ARIS XML Repair". Dame solamente el XML listo para descargar '
+    '@BPMN ARIS XML Repair. Dame solamente el XML listo para descargar '
     'sin nada mas o, en caso de no poder, ponmelo completo para copiar y pegar. '
     + REGLA_INCOMPLETO
 )
