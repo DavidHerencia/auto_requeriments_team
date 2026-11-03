@@ -73,7 +73,7 @@ class Aris:
         try:
             self.context = self.pw.chromium.launch_persistent_context(
                 str(self.profile), channel="chrome", headless=False,
-                accept_downloads=False
+                accept_downloads=False, chromium_sandbox=True
             )
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
             self.page.set_default_timeout(self.timeout)
@@ -247,15 +247,48 @@ class Aris:
         return d
 
     def _guardar_dialogo(self, nuevo: str):
+        """GWT: necesita eventos de teclado reales para activar Aceptar.
+
+        .fill() modifica el valor pero no genera keydown/keyup por carácter.
+        ARIS puede dejar Aceptar deshabilitado aunque el texto se vea.
+        """
+        if not nuevo or not nuevo.strip():
+            raise ArisError("No se puede confirmar un nombre vacío")
         d = self._dialog()
         fields = d.locator('input[type="text"]:visible, textarea:visible')
         if fields.count() != 1:
             raise ArisError(f"Campo de nombre ambiguo ({fields.count()})")
-        fields.fill(nuevo)
-        ok = d.get_by_role("button", name=re.compile(r"^(Aceptar|Crear|Guardar)$", re.I))
+
+        fields.click()
+        fields.fill("")  # limpia cualquier nombre anterior, sin confirmar nada
+        fields.press_sequentially(nuevo, delay=12)
+        if fields.input_value() != nuevo:
+            raise ArisError("El nombre escrito en ARIS no coincide con el solicitado")
+
+        # El botón real es <a role="button" aria-label="Aceptar" ...>,
+        # con atributo aria-disabled y clase disabled que cambian por teclado.
+        ok = d.locator('.modal-footer [role="button"][aria-label="Aceptar"]')
         if ok.count() != 1:
-            raise ArisError(f"Botón de confirmación ambiguo ({ok.count()})")
-        ok.click()  # una única acción de escritura
+            raise ArisError(f"Botón Aceptar ambiguo ({ok.count()})")
+        try:
+            self.page.wait_for_function(
+                """() => {
+                    const d = document.querySelector(
+                        '.modal.modal-dialog.in[role="dialog"][aria-hidden="false"]');
+                    const a = d && d.querySelector(
+                        '.modal-footer [role="button"][aria-label="Aceptar"]');
+                    return !!a && a.getAttribute('aria-disabled') === 'false'
+                           && !a.classList.contains('disabled')
+                           && !a.hasAttribute('disabled');
+                }""",
+                timeout=15000,
+            )
+        except PWTimeout as exc:
+            raise ArisError(
+                "ARIS no habilitó Aceptar después de escribir el nombre. "
+                "No se confirmó la operación."
+            ) from exc
+        ok.click()  # exactamente un clic; nunca se repite si algo falla
 
     def _esperar_nombre(self, nombre: str, kind: str = "grupo", absent=False):
         deadline = time.monotonic() + self.timeout / 1000
@@ -266,15 +299,40 @@ class Aris:
             self.page.wait_for_timeout(300)
         raise NoConfirmado(f"ARIS no confirmó {'ausencia' if absent else 'presencia'}: {nombre}")
 
+    def subir_nivel(self, parent_name: str):
+        """Usar la flecha nativa de ARIS, no la navegación del navegador."""
+        self._toolbar("LEVEL_UP").click()
+        self._ready(parent_name, timeout=60000)
+        self.log(f"Subido al nivel: {parent_name}")
+
     def crear_grupo(self, parent_url: str, parent_name: str, nombre: str) -> str:
         self.abrir(parent_url, expected=parent_name)
         if any(i.name == nombre for i in self.listar()):
             raise ArisError(f"Ya existe el grupo {nombre}; no sobrescribir")
         self._toolbar("CREATE_GROUP").click()
         self._guardar_dialogo(nombre)
+
+        # ARIS entra automáticamente al grupo recién creado.
+        # La confirmación real es observar la nueva carpeta en el encabezado.
+        try:
+            self._dialog().wait_for(state="hidden", timeout=self.timeout)
+        except PWTimeout as exc:
+            raise NoConfirmado("El diálogo Crear grupo no se cerró; no repetir creación") from exc
+        try:
+            self._ready(nombre, timeout=60000)
+        except ArisError as exc:
+            raise NoConfirmado(
+                f"ARIS no confirmó que entró al grupo {nombre!r}; no repetir creación"
+            ) from exc
+        child_url = self.page.url
+        if child_url == parent_url:
+            raise NoConfirmado("ARIS cambió el título sin cambiar de carpeta")
+        self.log(f"Grupo creado y abierto: {nombre}")
+
+        # Volver a la carpeta padre para traer 00 Ejemplo, como en el flujo manual.
+        self.subir_nivel(parent_name)
         self._esperar_nombre(nombre)
-        self.log(f"Grupo creado: {nombre}")
-        return self.entrar(parent_url, parent_name, nombre)
+        return child_url
 
     def renombrar(self, parent_url: str, parent_name: str,
                   anterior: str, nuevo: str, kind="grupo"):
@@ -302,12 +360,13 @@ class Aris:
         self._esperar_nombre(name)
         self.log(f"Movido: {name} -> {dst_parent}")
 
-    def copiar_plantilla(self, parent_url: str, parent_name: str) -> str:
+    def copiar_plantilla(self, parent_url: str, parent_name: str,
+                         plantilla: str = TEMPLATE) -> str:
         self.abrir(parent_url, expected=parent_name)
         antes = {i.name for i in self.listar()}
-        if TEMPLATE not in antes:
+        if plantilla not in antes:
             raise ArisError("No se encontró plantilla para copiar")
-        self.seleccionar(TEMPLATE)
+        self.seleccionar(plantilla)
         self._toolbar("COPY").click()
         self._pegar_una_vez()
         deadline = time.monotonic() + self.timeout / 1000
