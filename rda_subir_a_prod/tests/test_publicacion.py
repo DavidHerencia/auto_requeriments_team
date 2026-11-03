@@ -34,6 +34,62 @@ class TestPlanProd(unittest.TestCase):
             _plan(aris, "https://aris.example/origen", "Origen", Mock())
 
 
+class TestDestinoProduccion(unittest.TestCase):
+    def test_valida_jerarquia_aunque_cabecera_mueste_peru_produccion(self):
+        # ARIS muestra "Buscar en: PERU_PRODUCCION" mientras la tabla
+        # representa los hijos de 04 PERU (entre ellos 90 OTROS MODELOS).
+        from workflow_prod import _verificar_destino
+
+        aris = MagicMock()
+        aris.page.url = "https://aris.example/#repositorio/04PERU"
+        aris._grupo_actual.return_value = "PERU_PRODUCCION"
+        aris.listar.side_effect = [
+            [],  # atencion_r inicialmente vacío
+            [Item("90 OTROS MODELOS", "grupo"),
+             Item("01 VISTAS", "grupo")],
+        ]
+        _verificar_destino(
+            aris, "https://aris.example/#repositorio/atencion_r",
+            "atencion_r", "https://aris.example/#repositorio/origen",
+        )
+        aris.subir_nivel.assert_called_once_with("90 OTROS MODELOS")
+        aris.esperar_grupos.assert_called_once_with(
+            "https://aris.example/#repositorio/04PERU",
+            "90 OTROS MODELOS", {"atencion_r"},
+        )
+        aris._toolbar.assert_called_once_with("LEVEL_UP")
+        aris._toolbar.return_value.click.assert_called_once()
+        aris.abrir.assert_any_call(
+            "https://aris.example/#repositorio/atencion_r",
+            expected="atencion_r", reload=True
+        )
+        aris.crear_grupo.assert_not_called()
+
+    def test_padre_incorrecto_falla_sin_crear_nada(self):
+        from itertools import count
+        from workflow_prod import _verificar_destino
+
+        aris = MagicMock()
+        aris.page.url = "https://aris.example/#repositorio/otro"
+        aris._grupo_actual.return_value = "PERU_PRODUCCION"
+        aris.listar.side_effect = [
+            [], [Item("OTRO GRUPO", "grupo")],
+        ]
+        with patch("workflow_prod.time.monotonic",
+                   side_effect=lambda: next(countador)):
+            countador = count(start=0, step=50)
+            with self.assertRaisesRegex(ArisError, "No se pudo confirmar"):
+                _verificar_destino(
+                    aris, "https://aris.example/#repositorio/atencion_r",
+                    "atencion_r", "https://aris.example/#repositorio/origen",
+                )
+        aris.crear_grupo.assert_not_called()
+        aris.abrir.assert_any_call(
+            "https://aris.example/#repositorio/atencion_r",
+            expected="atencion_r", reload=True
+        )
+
+
 class TestDialogoFinal(unittest.TestCase):
     def crear_publicador(self, texto, accept_count=1):
         aris = MagicMock()
