@@ -424,7 +424,7 @@ class Aris:
         self.page.wait_for_timeout(1200)
         if self._alerta_destino_invalido():
             raise NoConfirmado(
-                "ARIS rechazó el grupo de destino. No se intentó pegar nuevamente."
+                "ARIS rechazó la copia: grupo de destino inválido. No se intentó pegar nuevamente."
             )
 
         # Volver al interior del destino y comprobar qué grupo se creó.
