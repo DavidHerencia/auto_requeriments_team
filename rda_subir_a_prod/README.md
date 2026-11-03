@@ -63,3 +63,23 @@ Si ARIS responde **fallo**, registrar y **no reintentar** el informe ni renombra
 `app.py` (interfaz), `aris.py` (interacciones Playwright), `workflow.py` (orquestador), `tests/test_logic.py` (pruebas sin ARIS).
 
 Pruebas: `.venv\Scripts\python.exe -m unittest discover -s tests -v`.
+
+## Correcciones posteriores (03/11/2026)
+
+- Chrome se abre con `chromium_sandbox=True` para no desactivar el sandbox ni utilizar `--no-sandbox`. Si las políticas del equipo impiden iniciar Chrome, **detenerse** y revisar la configuración autorizada; no volver a desactivar el sandbox.
+- Los diálogos GWT se completan con `press_sequentially()`, que genera eventos de teclado. Se verifica el nombre escrito, la habilitación de `Aceptar` y se hace **un único clic**.
+- Después de crear un grupo, ARIS entra en él. El robot guarda su URL, usa la flecha **Subir un nivel** de ARIS para volver a la carpeta padre y comprueba que la nueva carpeta exista.
+- Se soporta también la plantilla llamada `Ejemplo`, además de `00 Ejemplo`.
+
+**IMPORTANTE TRAS UNA PRUEBA INTERRUMPIDA:** si ya se creó una carpeta `Procesados ...`, revisa manualmente dónde quedaron `Ejemplo` y las carpetas `- Detalle`. No vuelvas a ejecutar el lote sobre una estructura parcialmente modificada sin comprobarla antes. El robot no reanuda ni deshace operaciones.
+
+Para probar las correcciones de forma controlada:
+
+```powershell
+cd rda_subir_a_prod
+python -m unittest discover -s tests -v
+python app.py
+```
+
+Estas pruebas unitarias no sustituyen la comprobación de Chrome ni de los diálogos en la instancia corporativa de ARIS.
+
