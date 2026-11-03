@@ -326,10 +326,10 @@ class TestResumenExportacion(unittest.TestCase):
 
     def test_ambos_grupos_en_un_solo_campo_y_segundo_vacio(self):
         self.resumen.input_value.return_value = (
-            "Grupos de escenario:\\n"
-            "[G] 7.3.3.12_P01 Autenticación de clientes - Detalle\\n\\n"
-            "Grupos y Modelos de Catálogo:\\n"
-            "[G] 7.3.3.12_P01 Autenticación de clientes\\n"
+            "Grupos de escenario:\n"
+            "[G] 7.3.3.12_P01 Autenticación de clientes - Detalle\n\n"
+            "Grupos y Modelos de Catálogo:\n"
+            "[G] 7.3.3.12_P01 Autenticación de clientes\n"
         )
         self.bot._exportar(self.detalle, self.base)
         self.dialog.locator.assert_called_once_with(
@@ -342,10 +342,10 @@ class TestResumenExportacion(unittest.TestCase):
 
     def test_resumen_equivocado_no_pulsa_finalizar(self):
         self.resumen.input_value.return_value = (
-            "Grupos de escenario:\\n"
-            "[G] 7.3.3.12_P01 Autenticación de clientes - Detalle\\n\\n"
-            "Grupos y Modelos de Catálogo:\\n"
-            "[G] 7.3.3.13_P01 Otro mapa\\n"
+            "Grupos de escenario:\n"
+            "[G] 7.3.3.12_P01 Autenticación de clientes - Detalle\n\n"
+            "Grupos y Modelos de Catálogo:\n"
+            "[G] 7.3.3.13_P01 Otro mapa\n"
         )
         with self.assertRaisesRegex(ArisError, "No se pulsó Finalizar"):
             self.bot._exportar(self.detalle, self.base)
