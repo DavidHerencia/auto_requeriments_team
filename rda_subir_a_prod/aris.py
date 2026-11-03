@@ -470,15 +470,18 @@ class Aris:
         if plantilla not in antes:
             raise ArisError(f"No se encontró la plantilla {plantilla!r} para copiar")
         self.seleccionar(plantilla, "grupo")
+        self.log(f"Preparando copia de {plantilla!r} para {parent_name!r}")
         self._toolbar("COPY").click()  # solo copia al portapapeles GWT
 
         # Elegir explícitamente <Procesados> como destino desde la raíz.
         # Se preserva la misma pestaña y sesión para no perder el portapapeles GWT.
         self.abrir(grandparent_url, expected=grandparent_name)
         self.seleccionar(parent_name, "grupo")
+        self.log(f"Destino para pegar confirmado en ARIS: {parent_name!r}")
         if self._alerta_destino_invalido():
             raise NoConfirmado("ARIS mostraba una alerta de destino inválido; no se pegó")
         self._pegar_una_vez()  # exactamente un intento de escritura
+        self.log("Pegado solicitado una sola vez; comprobando destino y resultado")
         # Dejar que GWT procese el clic antes de cambiar el hash de navegación.
         self.page.wait_for_timeout(1200)
         if self._alerta_destino_invalido():
