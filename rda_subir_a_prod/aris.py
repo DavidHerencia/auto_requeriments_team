@@ -107,13 +107,16 @@ class Aris:
             # No confundir un encabezado de repositorio desfasado con SSO.
             # ARIS puede cambiar la carpeta central antes que Buscar en: ... .
             current = self.page.url
-            try:
-                visible = self._grupo_actual()
-            except Exception:
-                visible = "(no disponible)"
-            if "idp." in urlsplit(current).hostname if urlsplit(current).hostname else False:
+            host = urlsplit(current).hostname or ""
+            if host.startswith("idp."):
                 msg = "La sesión pasó a SSO; completa la autenticación manual."
             else:
+                try:
+                    visible = self.page.locator("#headerSearchBox").get_attribute(
+                        "placeholder", timeout=2000
+                    )
+                except Exception:
+                    visible = "(sin encabezado disponible)"
                 msg = (
                     "ARIS no confirmó la carpeta esperada en su encabezado. "
                     f"Esperada={expected!r}, cabecera visible={visible!r}, "
