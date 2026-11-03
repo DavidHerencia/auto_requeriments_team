@@ -33,6 +33,18 @@ class TestLogic(unittest.TestCase):
         self.assertEqual(template, "00 Ejemplo")
         self.assertEqual([r.base for r in records], ["A", "B"])
 
+    def test_n5_ya_procesado_no_bloquea_nuevo_lote(self):
+        aris = Mock()
+        aris.listar.return_value = [
+            Item("00 Ejemplo", "grupo"),
+            Item("N5 - Detalle", "grupo"),
+            Item("Procesados 02-11-2026 14-00-00", "grupo"),
+        ]
+        plantilla, procesos = _mapear(aris)
+        self.assertEqual(plantilla, "00 Ejemplo")
+        self.assertEqual(len(procesos), 1)
+        self.assertEqual(procesos[0].base, "N5")
+
     def test_duplicados_despues_de_quitar_sufijo(self):
         a = Mock()
         a.listar.return_value = [
