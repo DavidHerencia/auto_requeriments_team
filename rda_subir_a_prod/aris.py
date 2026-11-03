@@ -380,6 +380,8 @@ class Aris:
         self.seleccionar(name)
         self._toolbar("CUT").click()
         self.abrir(dst_url, expected=dst_parent)
+        # Un elemento que haya quedado seleccionado cambia el destino del pegado.
+        self._limpiar_seleccion()
         if any(i.name == name for i in self.listar()):
             raise NoConfirmado(f"Destino ya tiene {name}; se interrumpe el movimiento")
         self._pegar_una_vez()
@@ -418,6 +420,12 @@ class Aris:
         if self._alerta_destino_invalido():
             raise NoConfirmado("ARIS mostraba una alerta de destino inválido; no se pegó")
         self._pegar_una_vez()  # exactamente un intento de escritura
+        # Dejar que GWT procese el clic antes de cambiar el hash de navegación.
+        self.page.wait_for_timeout(1200)
+        if self._alerta_destino_invalido():
+            raise NoConfirmado(
+                "ARIS rechazó el grupo de destino. No se intentó pegar nuevamente."
+            )
 
         # Volver al interior del destino y comprobar qué grupo se creó.
         self.abrir(parent_url, expected=parent_name)
