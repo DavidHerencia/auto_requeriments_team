@@ -463,7 +463,7 @@ class Publicador:
                             "ARIS volvió a mostrar el mismo aviso de importación "
                             "después de Aceptar; no se repetirá el clic."
                         )
-                    if not destino or destino not in content.replace("\\n", ""):
+                    if not destino or destino not in content.replace(chr(10), "").replace(chr(13), ""):
                         raise NoConfirmado(
                             "El aviso de importación no confirma la ruta N5 "
                             f"esperada={destino!r}; recibido={content[:500]!r}. "
