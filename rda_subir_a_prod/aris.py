@@ -609,6 +609,40 @@ class Aris:
             if self._grupo_actual() == copia:
                 self.subir_nivel(lote)
 
+    def esperar_grupos(self, parent_url: str, parent_name: str,
+                      nombres: set[str]):
+        """Esperar por observación a que se vean todos los grupos esperados.
+
+        No hay escrituras ni reintentos: la interfaz ARIS puede tardar en
+        actualizar la tabla después de completar una copia asíncrona.
+        """
+        if self._grupo_actual() != parent_name:
+            self.abrir(parent_url, expected=parent_name)
+        deadline = time.monotonic() + max(self.timeout / 1000, 120)
+        last_missing = None
+        next_log = 0
+        while time.monotonic() < deadline:
+            existentes = {x.name for x in self.listar() if x.kind == "grupo"}
+            faltantes = nombres - existentes
+            if not faltantes:
+                self.log(
+                    f"[COPIAS][BALANCE OK] {len(nombres)} grupos presentes: "
+                    f"{sorted(nombres)!r}"
+                )
+                return
+            if faltantes != last_missing or time.monotonic() >= next_log:
+                self.log(
+                    f"[COPIAS][BALANCE ESPERA] visibles={len(nombres)-len(faltantes)}"
+                    f"/{len(nombres)}; faltantes={sorted(faltantes)!r}"
+                )
+                last_missing = faltantes
+                next_log = time.monotonic() + 8
+            self.page.wait_for_timeout(400)
+        raise NoConfirmado(
+            f"ARIS no mostró todas las estructuras confirmadas. "
+            f"Faltantes={sorted(faltantes)!r}. No se volverá a copiar."
+        )
+
     def _seleccionar_reporte(self, target: str):
         tab = self.page.locator('li[data-testid="REPORT_REPOSITORY_BUTTON"]')
         panel = self.page.locator(REPORT_PANEL)
