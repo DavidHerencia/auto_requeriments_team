@@ -397,6 +397,64 @@ class Aris:
         ))
         return any(a.is_visible() for a in avisos.all())
 
+    def _grupo_actual(self) -> str:
+        """Carpeta visible en ARIS (no confiar solo en la URL hash)."""
+        placeholder = self.page.locator("#headerSearchBox").get_attribute("placeholder") or ""
+        prefix = "Buscar en: "
+        if not placeholder.startswith(prefix):
+            raise ArisError(
+                f"ARIS no muestra una carpeta reconocible (placeholder: {placeholder!r})"
+            )
+        nombre = placeholder[len(prefix):].strip()
+        if not nombre:
+            raise ArisError("El encabezado de ARIS no indica ninguna carpeta")
+        return nombre
+
+    def _volver_a_destino_tras_copia(self, destino_url: str, destino: str,
+                                    nivel_padre: str):
+        """Entrar por UI al destino tras pegar; NO cambiar location.hash.
+
+        ARIS puede ignorar un cambio de hash cuando hay una selección GWT
+        activa. Un clic en el nombre del grupo seleccionado sí inicia
+        la navegación normal (observado en prueba manual).
+        """
+        actual = self._grupo_actual()
+        if actual == destino:
+            self._ready(destino, timeout=45000)
+            if self.page.url != destino_url:
+                raise NoConfirmado(
+                    f"ARIS muestra {destino!r} pero la URL no coincide con "
+                    "la carpeta de destino. No se hará otra copia."
+                )
+            self.log(f"Ya estamos en el destino de la copia: {destino}")
+            return
+        if actual != nivel_padre:
+            raise NoConfirmado(
+                f"Tras pegar, ARIS quedó en {actual!r}, no en "
+                f"{nivel_padre!r} ni {destino!r}. No se hará otra copia."
+            )
+        self.log(f"Volviendo a {destino} mediante clic en el repositorio")
+        row = self._row(destino, "grupo")
+        link = row.locator(".itemTitle .titledesc a.clickable")
+        if link.count() != 1:
+            raise ArisError(
+                f"No hay un enlace único para entrar en {destino!r}"
+            )
+        link.click()  # navegación de lectura: no repite ninguna escritura
+        try:
+            self._ready(destino, timeout=60000)
+        except ArisError as exc:
+            raise NoConfirmado(
+                f"ARIS no confirmó la entrada a {destino!r} "
+                "después del clic. No se hará otro pegado."
+            ) from exc
+        if self.page.url != destino_url:
+            raise NoConfirmado(
+                f"ARIS abrió {destino!r}, pero la URL es distinta "
+                "de la guardada para este lote. Detenido."
+            )
+        self.log(f"Destino confirmado: {destino}")
+
     def copiar_plantilla(self, parent_url: str, parent_name: str,
                          plantilla: str, grandparent_url: str,
                          grandparent_name: str) -> str:
@@ -427,8 +485,12 @@ class Aris:
                 "ARIS rechazó la copia: grupo de destino inválido. No se intentó pegar nuevamente."
             )
 
-        # Volver al interior del destino y comprobar qué grupo se creó.
-        self.abrir(parent_url, expected=parent_name)
+        # Regresar mediante clic sobre el grupo real, no por cambio de hash.
+        # Esta transición fue el bloqueo observado en el primer lote.
+        self._volver_a_destino_tras_copia(
+            destino_url=parent_url, destino=parent_name,
+            nivel_padre=grandparent_name,
+        )
         deadline = time.monotonic() + self.timeout / 1000
         while time.monotonic() < deadline:
             if self._alerta_destino_invalido():
