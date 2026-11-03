@@ -239,7 +239,15 @@ class App:
         try:
             data = json.loads(Path(filename).read_text(encoding="utf-8"))
             if data.get("estado") == "interrumpido":
-                self.state.set("Interrumpido: puede haber cambios parciales. Ver logs y JSON.")
+                if data.get("simulacion") is True or data.get("modo") == "simulacion":
+                    self.state.set(
+                        "Validación interrumpida, SIN cambios en ARIS. Ver logs y JSON."
+                    )
+                else:
+                    self.state.set(
+                        "Ejecución interrumpida: puede haber cambios parciales. "
+                        "Ver logs y JSON."
+                    )
             elif data.get("estado") == "completado_con_errores":
                 self.state.set("Completado con incidencias. Ver logs y JSON.")
             elif data.get("estado") == "completado":
