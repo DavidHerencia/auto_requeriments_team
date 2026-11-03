@@ -315,7 +315,7 @@ class Aris:
         # ARIS entra automáticamente al grupo recién creado.
         # La confirmación real es observar la nueva carpeta en el encabezado.
         try:
-            self._dialog().wait_for(state="hidden", timeout=self.timeout)
+            self.page.locator(DIALOG).wait_for(state="hidden", timeout=self.timeout)
         except PWTimeout as exc:
             raise NoConfirmado("El diálogo Crear grupo no se cerró; no repetir creación") from exc
         try:
