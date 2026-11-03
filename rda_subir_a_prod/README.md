@@ -161,3 +161,23 @@ Primero probar **Validar flujo 2 (sin cambios)**. El código y los tests offline
 Nuevos logs: `[PROD][DESTINO]`, `[PROD][DESTINO OK]` y `[PROD][DESTINO][ESPERA]`. La interfaz ahora distingue **validación interrumpida sin cambios** de **ejecución real con posibles cambios parciales**. Se añadieron pruebas sin ARIS para el encabezado `PERU_PRODUCCION` y el rechazo de una jerarquía incorrecta.
 
 Esto no modifica el informe de publicación ni los pasos de creación. **Probar primero `Validar flujo 2 (sin cambios)`** y revisar que aparezca `[PROD][DESTINO OK]` seguido de `[PROD][SIMULACION]`, antes de permitir publicación real.
+
+## Corrección del árbol de publicación y continuación controlada (03/11/2026)
+
+**Incidencia real:** tras crear correctamente `7.3.3.12_P01` y `7.3.3.13_P01` en `atencion_r`, el informe se lanzó, pero el asistente `TREE_P0` solo mostraba `00 Procesos` contraído (`aria-expanded="false"`). El robot buscaba de inmediato el grupo `<proceso> - Detalle` en nivel 2 y agotaba el plazo; nunca lo desplegaba.
+
+**Corrección del asistente GWT:**
+1. `TREE_P0`: pulsar el **triángulo (IMG)** de `00 Procesos` (nivel 1) solo si está contraído; esperar `aria-expanded="true"`. Hacer clic **en el texto** del grupo exacto `<proceso> - Detalle` (nivel 2) y confirmar `aria-selected="true"`.
+2. Esperar reactivamente a que `Siguiente` deje de estar deshabilitado (`aria-disabled` / `disabled`). Clic **una vez**.
+3. `TREE_P1`: repetir la operación con el triángulo de `01 Mapas y Catálogos`, seleccionar el grupo `<proceso>` (sin sufijo) y confirmar `Siguiente`.
+4. El paso siguiente (resumen de exportación) sigue comprobando las dos selecciones antes de pulsar `Finalizar`. No se cambió la publicación definitiva ni la lógica del aviso final.
+
+Si no se presenta un nodo, los logs `[PROD][ARBOL][ESPERA]` y `[PROD][ARBOL][ERROR]` listan las etiquetas, niveles y atributos GWT visibles. Nunca se repite `Lanzar informe`, `Finalizar` ni un clic de selección ambiguo.
+
+**Continuar después de un lote interrumpido:** las carpetas N5 de producción creadas en la prueba previa NO se deben recrear por defecto. La interfaz muestra una casilla **Flujo 2: usar N5 existentes SOLO si están vacíos**, desmarcada al iniciar. Al marcarla:
+- El preflight acepta solamente grupos preexistentes cuyo nombre coincida con un código N5 mapeado en el Link 2; cualquier otro elemento detiene el lote.
+- Entra a cada grupo existente y verifica que NO contenga carpetas, modelos ni objetos. Si tiene contenido, se detiene para no sobrescribir producción.
+- Solo los N5 existentes y vacíos se reutilizan; se crean únicamente los grupos faltantes. El JSON marca `destino: reutilizado_vacio` y el resumen distingue `destinos_creados` de `destinos_reutilizados`.
+- La casilla **no se recuerda al reiniciar**, de modo que un nuevo lote requiere autorizar nuevamente la continuación.
+
+**Prueba recomendada:** comprobar visualmente que los dos N5 anteriores están vacíos; marcar la opción de continuación; ejecutar **Validar flujo 2 (sin cambios)**. Si el preflight confirma ambos, desmarcar `Simulación` y ejecutar con confirmación explícita para completar los asistentes. El informe anterior fue lanzado, pero no completó su selección; revisar el historial antes de repetir cualquier publicación. No se ha probado aún esta versión en ARIS corporativo.
