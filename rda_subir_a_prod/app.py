@@ -12,6 +12,7 @@ from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
 
 from workflow import ejecutar_flujo_1
+from workflow_prod import ejecutar_flujo_2
 
 BASE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "rda_subir_a_prod"
 PROFILE = BASE / "chrome_profile"
@@ -53,22 +54,41 @@ class App:
         p = ttk.Frame(self.root, padding=18)
         p.pack(fill="both", expand=True)
         ttk.Label(p, text="RDA · ARIS", font=("Segoe UI", 19, "bold")).pack(anchor="w")
-        ttk.Label(p, text="Flujo 1: preparar modelos y generar mapas | Flujo 2: pase a producción (pendiente)").pack(anchor="w", pady=(0, 14))
-        ttk.Label(p, text="Carpeta de diagramas recién importados · Link 1").pack(anchor="w")
+        ttk.Label(p, text="Flujo 1: preparar mapas | Flujo 2: publicar modelos revisados", wraplength=810).pack(anchor="w", pady=(0, 14))
+        ttk.Label(p, text="Link 1 · Flujo 1: origen importado | Flujo 2: destino en producción (atencion_r)").pack(anchor="w")
         ttk.Entry(p, textvariable=self.link1).pack(fill="x", pady=(4, 10))
-        ttk.Label(p, text="Destino de producción · Link 2 (reservado para flujo 2)").pack(anchor="w")
+        ttk.Label(p, text="Link 2 · Flujo 2: carpeta de procesos preparados y revisados").pack(anchor="w")
         ttk.Entry(p, textvariable=self.link2).pack(fill="x", pady=(4, 10))
         ttk.Label(p, text="Enlace adicional · Link 3 (reservado)").pack(anchor="w")
         ttk.Entry(p, textvariable=self.link3).pack(fill="x", pady=(4, 10))
         ttk.Label(p, textvariable=self.state, foreground="#165c9c").pack(anchor="w", pady=(4, 8))
         actions = ttk.Frame(p)
         actions.pack(fill="x", pady=8)
-        self.validate_btn = ttk.Button(actions, text="Validar sesión y mapear", command=self._preflight)
+        ttk.Checkbutton(
+            actions, text="Simulación (sin modificar ARIS)", variable=self.simular
+        ).pack(side="left", padx=(0, 10))
+        self.validate_btn = ttk.Button(
+            actions, text="Validar flujo 1",
+            command=lambda: self._start(True, flujo=1)
+        )
         self.validate_btn.pack(side="left", padx=(0, 10))
-        ttk.Checkbutton(actions, text="Simulación (sin modificar ARIS)", variable=self.simular).pack(side="left", padx=(0, 10))
-        self.execute_btn = ttk.Button(actions, text="Ejecutar flujo 1", command=self._execute)
-        self.execute_btn.pack(side="left", padx=(0, 10))
-        ttk.Button(actions, text="Flujo 2 · Próximamente", state="disabled").pack(side="left")
+        self.execute_btn = ttk.Button(
+            actions, text="Ejecutar flujo 1",
+            command=lambda: self._start(self.simular.get(), flujo=1)
+        )
+        self.execute_btn.pack(side="left")
+        actions2 = ttk.Frame(p)
+        actions2.pack(fill="x", pady=(0, 6))
+        self.validate_prod_btn = ttk.Button(
+            actions2, text="Validar flujo 2 (sin cambios)",
+            command=lambda: self._start(True, flujo=2)
+        )
+        self.validate_prod_btn.pack(side="left", padx=(0, 10))
+        self.execute_prod_btn = ttk.Button(
+            actions2, text="Ejecutar flujo 2 · Producción",
+            command=lambda: self._start(self.simular.get(), flujo=2)
+        )
+        self.execute_prod_btn.pack(side="left")
         log_actions = ttk.Frame(p)
         log_actions.pack(fill="x", pady=(12, 5))
         ttk.Label(log_actions, text="Registro de ejecución").pack(side="left")
@@ -116,33 +136,68 @@ class App:
         logging.info(message)
         self.events.put(("log", message))
 
-    def _start(self, simular: bool):
+    def _start(self, simular: bool, flujo: int = 1):
         if self.busy:
             return
         try:
             from aris import validar_url
-            url = validar_url(self.link1.get())
+            url1 = validar_url(self.link1.get())
+            url2 = validar_url(self.link2.get()) if flujo == 2 else None
+            if flujo == 2 and url1 == url2:
+                raise ValueError("Los enlaces de producción y origen son idénticos")
         except ValueError as exc:
-            messagebox.showerror("Link 1 inválido", str(exc))
+            messagebox.showerror("Enlace inválido", str(exc))
             return
         if not simular:
-            if not messagebox.askyesno("Confirmar cambios reales",
-                     "Este flujo CREARÁ, COPIARÁ, CORTARÁ, PEGARÁ y RENOMBRARÁ carpetas, "
-                     "y lanzará informes en ARIS. No tendrá reintentos automáticos.\n\n¿Ejecutar?"):
+            if flujo == 2:
+                texto = (
+                    "FLUJO 2: PASO A PRODUCCIÓN\n\n"
+                    "El bot CREARÁ grupos N5 en el Link 1 y ejecutará "
+                    "el informe de publicación con los modelos del Link 2.\n\n"
+                    "En la resolución de conflictos, ARIS indica que "
+                    "MODELOS, OBJETOS y CONEXIONES del ORIGEN "
+                    "SOBREESCRIBEN los del DESTINO.\n\n"
+                    "Se valida que la carpeta esté vacía y que la ruta del "
+                    "asistente sea 04 PERU / 90 OTROS MODELOS / atencion_r / N5.\n"
+                    "Sin reintentos automáticos. ¿Confirmas la ejecución REAL?"
+                )
+            else:
+                texto = (
+                    "Flujo 1 creará, copiará, moverá y renombrará carpetas "
+                    "y lanzará informes. Sin reintentos automáticos.\n\n¿Ejecutar?"
+                )
+            if not messagebox.askyesno("Confirmar cambios reales en ARIS", texto):
                 return
         self._save()
         self.busy = True
-        self.state.set("Validando ARIS..." if simular else "Ejecutando cambios reales...")
-        self.validate_btn.configure(state="disabled")
-        self.execute_btn.configure(state="disabled")
-        t = threading.Thread(target=self._worker, args=(url, simular), daemon=True)
+        self.state.set(
+            f"Flujo {flujo}: " +
+            ("validando y mapeando..." if simular else "ejecutando cambios reales...")
+        )
+        for b in (
+            self.validate_btn, self.execute_btn,
+            self.validate_prod_btn, self.execute_prod_btn
+        ):
+            b.configure(state="disabled")
+        t = threading.Thread(
+            target=self._worker, args=(flujo, url1, url2, simular),
+            daemon=True
+        )
         t.start()
 
-    def _worker(self, url, simular):
+    def _worker(self, flujo: int, url1: str, url2: str | None, simular: bool):
         path, handler = configurar_logs(self.events)
-        self._log(f"Log guardado en {path}")
+        self._log(f"[FLUJO {flujo}] Log guardado en {path}")
         try:
-            result = ejecutar_flujo_1(url, PROFILE, RESULTS, self._log, simular=simular)
+            if flujo == 1:
+                result = ejecutar_flujo_1(
+                    url1, PROFILE, RESULTS, self._log, simular=simular
+                )
+            else:
+                result = ejecutar_flujo_2(
+                    url1, url2, PROFILE, RESULTS,
+                    self._log, simular=simular
+                )
             self.events.put(("done", str(result)))
         except Exception as exc:
             self._log(f"Error inesperado: {type(exc).__name__}: {exc}")
@@ -150,12 +205,6 @@ class App:
         finally:
             logging.getLogger().removeHandler(handler)
             handler.close()
-
-    def _preflight(self):
-        self._start(simular=True)
-
-    def _execute(self):
-        self._start(simular=self.simular.get())
 
     def _drain(self):
         try:
@@ -166,12 +215,15 @@ class App:
                     self.console.insert("end", val + "\n")
                     self.console.see("end")
                     self.console.configure(state="disabled")
-                    if val.startswith(("[MAPEO]", "[COPIAS]", "[COPIA]", "[RENOMBRADO]")):
+                    if val.startswith(("[MAPEO]", "[COPIAS]", "[COPIA]", "[RENOMBRADO]", "[PROD]")):
                         self.state.set(val[:160])
                 else:
                     self.busy = False
-                    self.validate_btn.configure(state="normal")
-                    self.execute_btn.configure(state="normal")
+                    for b in (
+                        self.validate_btn, self.execute_btn,
+                        self.validate_prod_btn, self.execute_prod_btn
+                    ):
+                        b.configure(state="normal")
                     self.state.set("Finalizado; revisa reporte JSON" if kind == "done" else "Error")
                     if kind == "done":
                         self._append_report(val)
@@ -191,13 +243,16 @@ class App:
             elif data.get("estado") == "completado_con_errores":
                 self.state.set("Completado con incidencias. Ver logs y JSON.")
             elif data.get("estado") == "completado":
-                self.state.set("Flujo 1 completado y registrado.")
+                self.state.set(
+                    f"Flujo {data.get('flujo', 1)} completado y registrado."
+                )
             elif data.get("estado") == "simulacion_correcta":
                 self.state.set("Validación finalizada sin cambios.")
             self.console.insert(
                 "end",
                 f"ESTADO: {data['estado']}\n"
                 f"COPIAS: {data.get('copias', {})}\n"
+                f"PUBLICACIÓN: {data.get('registros', []) if data.get('flujo') == 2 else ''}\n"
                 f"RESUMEN: {data.get('resumen', {})}\n"
                 f"ERRORES: {data.get('errores_globales', [])}\n"
             )
