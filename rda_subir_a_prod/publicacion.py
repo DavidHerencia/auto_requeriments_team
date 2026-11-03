@@ -406,8 +406,8 @@ class Publicador:
         self._boton("Finalizar").click()  # publicación definitiva, SIN retry
         self.log(f"[PROD][PUBLICACION] Enviada una vez al destino {got}")
 
-    def _resultado(self, baseline: int) -> bool:
-        """Esperar el aviso terminal de ARIS y pulsar Aceptar UNA sola vez.
+    def _resultado(self, baseline: int, codigo: str | None = None) -> bool:
+        """Confirmar la importación intermedia y el aviso terminal de ARIS.
 
         El historial en la barra lateral puede incluir ejecuciones anteriores
         o actualizarse antes que el diálogo: nunca se toma como confirmación
@@ -416,6 +416,7 @@ class Publicador:
         deadline = time.monotonic() + 600
         next_log = 0
         aviso_historial = None
+        importacion_aceptada = False
         exitos = re.compile(
             r"el informe est[aá] completo|el informe ha concluido|"
             r"el informe se ha completado|la generaci[oó]n del informe ha concluido",
@@ -446,6 +447,65 @@ class Publicador:
                     else "ok" if exitos.search(content)
                     else None
                 )
+                # ARIS muestra primero "Importación de escenario" con
+                # "La información se ha incorporado en la carpeta ...".
+                # Ese Aceptar es INTERMEDIO: no equivale al informe completo.
+                # Verificar la ruta N5 antes de cerrar el aviso, sin repetir
+                # publicaciones ni hacer clic sobre diálogos desconocidos.
+                es_importacion = (
+                    "Importación de escenario" in content
+                    and "La información se ha incorporado en la carpeta" in content
+                )
+                if es_importacion:
+                    destino = "\\".join((*DESTINO_WIZARD, codigo)) if codigo else None
+                    if importacion_aceptada:
+                        raise NoConfirmado(
+                            "ARIS volvió a mostrar el mismo aviso de importación "
+                            "después de Aceptar; no se repetirá el clic."
+                        )
+                    if not destino or destino not in content.replace("\\n", ""):
+                        raise NoConfirmado(
+                            "El aviso de importación no confirma la ruta N5 "
+                            f"esperada={destino!r}; recibido={content[:500]!r}. "
+                            "No se pulsó Aceptar."
+                        )
+                    aceptar_import = d.get_by_role(
+                        "button", name="Aceptar", exact=True
+                    )
+                    if aceptar_import.count() != 1 or (
+                        aceptar_import.get_attribute("aria-disabled") == "true"
+                        or aceptar_import.get_attribute("disabled") is not None
+                    ):
+                        raise NoConfirmado(
+                            "El aviso de importación no tiene un Aceptar habilitado "
+                            "y único. No se repetirá el informe."
+                        )
+                    self.log(
+                        f"[PROD][IMPORTACION OK] ARIS confirmó incorporación "
+                        f"en {destino!r}; pulsando Aceptar intermedio una vez"
+                    )
+                    aceptar_import.click()
+                    importacion_aceptada = True
+                    try:
+                        self.page.wait_for_function(
+                            """() => !Array.from(
+                                document.querySelectorAll('div[role="dialog"]')
+                            ).some(el => el.getClientRects().length > 0
+                                && el.textContent.includes('Importación de escenario')
+                                && el.textContent.includes(
+                                    'La información se ha incorporado en la carpeta'))""",
+                            timeout=45000
+                        )
+                    except PWTimeout as exc:
+                        raise NoConfirmado(
+                            "Se pulsó Aceptar de importación pero el aviso no "
+                            "desapareció. No se repetirá el clic."
+                        ) from exc
+                    self.log(
+                        "[PROD][IMPORTACION] Aviso intermedio cerrado; "
+                        "esperando confirmación final del informe"
+                    )
+                    continue
                 if status:
                     aceptar = d.get_by_role("button", name="Aceptar", exact=True)
                     if aceptar.count() != 1:
@@ -534,4 +594,4 @@ class Publicador:
         self._mapa(base)
         self._exportar(detalle, base)
         self._destino(codigo)
-        return self._resultado(baseline)
+        return self._resultado(baseline, codigo=codigo)
