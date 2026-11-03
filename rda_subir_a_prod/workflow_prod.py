@@ -345,8 +345,11 @@ def ejecutar_flujo_2(destino_url: str, origen_url: str, perfil: Path,
             doc["destino_nombre"] = destino_nombre
             update()
             log(
-                f"[PROD][PLAN] {len(registros)} carpetas N5 nuevas bajo "
-                f"{destino_nombre!r}; {len(registros)} informes de publicación"
+                f"[PROD][PLAN] N5 del lote={len(registros)}; "
+                f"N5 existentes vacíos={len(existentes)}; "
+                f"N5 nuevos a crear={len(registros) - len(existentes)}; "
+                f"informes a ejecutar={len(registros)}; "
+                f"destino={destino_nombre!r}"
             )
             if simular:
                 doc["estado"] = "simulacion_correcta"
