@@ -90,6 +90,181 @@ class TestDestinoProduccion(unittest.TestCase):
         )
 
 
+class TestArbolPublicacion(unittest.TestCase):
+    def setUp(self):
+        self.aris = MagicMock()
+        self.log = Mock()
+        self.bot = Publicador(self.aris, self.log)
+
+    def test_escenario_despliega_00_procesos_antes_de_seleccionar(self):
+        acciones = []
+        self.bot._esperar_paso = Mock(
+            side_effect=lambda *a: acciones.append(("paso", *a))
+        )
+        self.bot._expandir = Mock(
+            side_effect=lambda *a: acciones.append(("triangulo", *a))
+        )
+        self.bot._seleccionar = Mock(
+            side_effect=lambda *a: acciones.append(("nombre", *a))
+        )
+        self.bot._next = Mock(
+            side_effect=lambda *a: acciones.append(("siguiente", *a))
+        )
+        detalle = "7.3.3.12_P01 Autenticación de clientes - Detalle"
+        self.bot._escenario(detalle)
+        self.assertEqual(acciones, [
+            ("paso", "TREE_P0"),
+            ("triangulo", "TREE_P0", "00 Procesos", 1),
+            ("nombre", "TREE_P0", detalle, 2),
+            ("siguiente", "Escenario / 00 Procesos"),
+        ])
+
+    def test_mapa_despliega_01_mapas_antes_de_seleccionar(self):
+        acciones = []
+        self.bot._esperar_paso = Mock(
+            side_effect=lambda *a: acciones.append(("paso", *a))
+        )
+        self.bot._expandir = Mock(
+            side_effect=lambda *a: acciones.append(("triangulo", *a))
+        )
+        self.bot._seleccionar = Mock(
+            side_effect=lambda *a: acciones.append(("nombre", *a))
+        )
+        self.bot._next = Mock(
+            side_effect=lambda *a: acciones.append(("siguiente", *a))
+        )
+        nombre = "7.3.3.12_P01 Autenticación de clientes"
+        self.bot._mapa(nombre)
+        self.assertEqual(acciones, [
+            ("paso", "TREE_P1"),
+            ("triangulo", "TREE_P1", "01 Mapas y Catálogos", 1),
+            ("nombre", "TREE_P1", nombre, 2),
+            ("siguiente", "Mapa / 01 Mapas y Catálogos"),
+        ])
+
+    def test_expandir_click_solo_en_imagen_triangulo(self):
+        nodo = MagicMock()
+        nodo.get_attribute.return_value = "false"
+        triangulo = MagicMock()
+        triangulo.count.return_value = 1
+        nodo.locator.return_value.first = triangulo
+        self.bot._esperar_nodo = Mock(return_value=nodo)
+        self.bot._expandir("TREE_P0", "00 Procesos", 1)
+        nodo.locator.assert_called_once_with(".cellTreeItemImage img")
+        triangulo.click.assert_called_once_with()
+        self.aris.page.wait_for_function.assert_called_once()
+
+    def test_expandido_no_hace_segundo_click(self):
+        nodo = MagicMock()
+        nodo.get_attribute.return_value = "true"
+        self.bot._esperar_nodo = Mock(return_value=nodo)
+        self.bot._expandir("TREE_P0", "00 Procesos", 1)
+        nodo.locator.assert_not_called()
+
+    def test_seleccionar_hace_click_en_nombre_no_triangulo(self):
+        nodo = MagicMock()
+        etiqueta = MagicMock()
+        etiqueta.count.return_value = 1
+        etiqueta.get_attribute.return_value = "7.3.3.12_P01 - Detalle"
+        nodo.locator.return_value.first = etiqueta
+        self.bot._esperar_nodo = Mock(return_value=nodo)
+        self.bot._seleccionar(
+            "TREE_P0", "7.3.3.12_P01 - Detalle", 2
+        )
+        nodo.locator.assert_called_once_with(
+            ".cellTreeItemValue > span[title]"
+        )
+        etiqueta.click.assert_called_once_with()
+        self.aris.page.wait_for_function.assert_called_once()
+
+    def test_siguiente_espera_activacion_una_sola_vez(self):
+        boton = MagicMock()
+        self.bot._boton = Mock(return_value=boton)
+        self.bot._next("Escenario / 00 Procesos")
+        self.aris.page.wait_for_function.assert_called_once()
+        boton.click.assert_called_once_with()
+
+    def test_siguiente_deshabilitado_no_se_pulsa(self):
+        from playwright.sync_api import TimeoutError as PWTimeout
+        self.bot._boton = Mock()
+        self.aris.page.wait_for_function.side_effect = PWTimeout("Sin habilitar")
+        with self.assertRaisesRegex(NoConfirmado, "no habilitó Siguiente"):
+            self.bot._next("Escenario / 00 Procesos")
+        self.bot._boton.assert_not_called()
+
+
+class TestReanudacionDestinos(unittest.TestCase):
+    def test_reutiliza_solo_n5_esperados_y_vacios(self):
+        from workflow_prod import _verificar_destino
+
+        aris = MagicMock()
+        n5a = "7.3.3.12_P01"
+        n5b = "7.3.3.13_P01"
+        aris.page.url = "https://aris.example/#repositorio/04peru"
+        aris._grupo_actual.return_value = "PERU_PRODUCCION"
+        aris.listar.side_effect = [
+            [Item(n5a, "grupo"), Item(n5b, "grupo")],
+            [Item("90 OTROS MODELOS", "grupo")],
+            [], [],
+        ]
+        disponibles = _verificar_destino(
+            aris, "https://aris.example/#repositorio/atencion_r",
+            "atencion_r", "https://aris.example/#repositorio/origen",
+            codigos_esperados={n5a, n5b}, continuar_vacios=True,
+        )
+        self.assertEqual(disponibles, {n5a, n5b})
+        self.assertEqual(aris.entrar.call_count, 2)
+        aris.crear_grupo.assert_not_called()
+
+    def test_reanudacion_sin_autorizacion_es_rechazada(self):
+        from workflow_prod import _verificar_destino
+
+        aris = MagicMock()
+        aris.listar.return_value = [Item("7.3.3.12_P01", "grupo")]
+        with self.assertRaisesRegex(ArisError, "activa expresamente"):
+            _verificar_destino(
+                aris, "https://aris.example/destino",
+                "atencion_r", "https://aris.example/origen",
+                codigos_esperados={"7.3.3.12_P01"},
+                continuar_vacios=False,
+            )
+        aris.crear_grupo.assert_not_called()
+
+    def test_reanudacion_rechaza_destino_no_vacio(self):
+        from workflow_prod import _verificar_destino
+
+        aris = MagicMock()
+        aris.page.url = "https://aris.example/#repositorio/04peru"
+        aris._grupo_actual.return_value = "PERU_PRODUCCION"
+        aris.listar.side_effect = [
+            [Item("7.3.3.12_P01", "grupo")],
+            [Item("90 OTROS MODELOS", "grupo")],
+            [Item("Modelo existente", "modelo")],
+        ]
+        with self.assertRaisesRegex(ArisError, "ya contiene"):
+            _verificar_destino(
+                aris, "https://aris.example/destino",
+                "atencion_r", "https://aris.example/origen",
+                codigos_esperados={"7.3.3.12_P01"},
+                continuar_vacios=True,
+            )
+        aris.crear_grupo.assert_not_called()
+
+    def test_reanudacion_rechaza_grupos_ajenos(self):
+        from workflow_prod import _verificar_destino
+
+        aris = MagicMock()
+        aris.listar.return_value = [Item("Otro N5", "grupo")]
+        with self.assertRaisesRegex(ArisError, "distintos"):
+            _verificar_destino(
+                aris, "https://aris.example/destino",
+                "atencion_r", "https://aris.example/origen",
+                codigos_esperados={"7.3.3.12_P01"},
+                continuar_vacios=True,
+            )
+        aris.crear_grupo.assert_not_called()
+
+
 class TestDialogoFinal(unittest.TestCase):
     def crear_publicador(self, texto, accept_count=1):
         aris = MagicMock()
