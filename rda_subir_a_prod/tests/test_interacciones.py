@@ -201,6 +201,7 @@ class TestInteracciones(unittest.TestCase):
         bot = Aris(Path("."), Mock())
         bot.page = MagicMock()
         bot.entrar = Mock()
+        # Forzar la rama alternativa: la copia ya está abierta.
         bot._grupo_actual = Mock(return_value="00 Ejemplo(1)")
         bot.subir_nivel = Mock()
         bot.listar = Mock(side_effect=[
@@ -215,6 +216,30 @@ class TestInteracciones(unittest.TestCase):
         bot.entrar.assert_called_once_with(
             "https://aris.example/lote", "Procesados", "00 Ejemplo(1)"
         )
+        bot.subir_nivel.assert_called_once_with("Procesados")
+
+    def test_validar_copia_desde_lote_no_cambia_hash(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot._grupo_actual = Mock(side_effect=["Procesados", "00 Ejemplo(1)"])
+        bot._row = Mock()
+        bot._ready = Mock()
+        bot.entrar = Mock()
+        bot.subir_nivel = Mock()
+        link = MagicMock()
+        link.count.return_value = 1
+        bot._row.return_value.locator.return_value = link
+        bot.listar = Mock(return_value=[
+            Item("00 Procesos", "grupo"),
+            Item("01 Mapas y Catálogos", "grupo"),
+        ])
+        bot.validar_copia_completa(
+            "https://aris.example/lote", "Procesados", "00 Ejemplo(1)"
+        )
+        bot.entrar.assert_not_called()
+        bot._row.assert_called_once_with("00 Ejemplo(1)", "grupo")
+        link.dblclick.assert_called_once()
+        bot._ready.assert_called_once_with("00 Ejemplo(1)", timeout=60000)
         bot.subir_nivel.assert_called_once_with("Procesados")
 
     def test_copia_rechazada_no_reintenta_pegado(self):
