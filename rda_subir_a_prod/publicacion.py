@@ -313,23 +313,44 @@ class Publicador:
         text = d.inner_text()
         if "Resumen de datos a exportar" not in text:
             raise ArisError("El resumen de exportación no está disponible")
-        # ARIS presenta los grupos seleccionados en dos TEXTAREA.
-        # No aparecen en inner_text(): hay que leer el VALUE del control.
-        scen = d.locator('[data-testid="TEXTO_RESUMEN_P2"]')
-        maps = d.locator('[data-testid="TEXTO_PROC_MOD_P2"]')
-        if scen.count() != 1 or maps.count() != 1:
-            raise ArisError("No se encontraron los resúmenes de escenario y mapa")
-        scen_value = scen.input_value()
-        maps_value = maps.input_value()
-        if detalle not in scen_value or base not in maps_value:
+        # El TEXTAREA TEXTO_RESUMEN_P2 de ARIS contiene AMBAS secciones:
+        # "Grupos de escenario" y "Grupos y Modelos de Catálogo".
+        # TEXTO_PROC_MOD_P2 puede existir pero estar vacío: NO es error.
+        # Se cotejan nombres completos por sección, no subcadenas
+        # (base también aparece dentro del nombre "<base> - Detalle").
+        resumen = d.locator('[data-testid="TEXTO_RESUMEN_P2"]')
+        if resumen.count() != 1:
             raise ArisError(
-                "El resumen de exportación no coincide con el proceso: "
-                f"escenario={scen_value[:200]!r}, mapa={maps_value[:200]!r}"
+                "No hay un resumen único de exportación (TEXTO_RESUMEN_P2)"
             )
-        self.log(
-            f"[PROD][RESUMEN EXPORT] Escenario={scen_value[:160]!r} "
-            f"Mapa={maps_value[:160]!r}"
+        resumen_valor = resumen.input_value()
+        escenario_match = re.search(
+            r"Grupos de escenario:\\s*\\[G\\]\\s*([^\\r\\n]+)",
+            resumen_valor, flags=re.I
         )
+        catalogo_match = re.search(
+            r"Grupos y Modelos de Cat[aá]logo:\\s*\\[G\\]\\s*([^\\r\\n]+)",
+            resumen_valor, flags=re.I
+        )
+        seleccionado_detalle = (
+            escenario_match.group(1).strip() if escenario_match else None
+        )
+        seleccionado_mapa = (
+            catalogo_match.group(1).strip() if catalogo_match else None
+        )
+        self.log(
+            f"[PROD][RESUMEN EXPORT] escenario={seleccionado_detalle!r}; "
+            f"catalogo={seleccionado_mapa!r}"
+        )
+        if seleccionado_detalle != detalle or seleccionado_mapa != base:
+            raise ArisError(
+                "El resumen de exportación no coincide con el proceso. "
+                f"Esperado: escenario={detalle!r}, catálogo={base!r}. "
+                f"Mostrado: escenario={seleccionado_detalle!r}, "
+                f"catálogo={seleccionado_mapa!r}. "
+                f"Texto={resumen_valor[:450]!r}. "
+                "No se pulsó Finalizar."
+            )
         self.log("[PROD][ASISTENTE] Resumen de exportación inspeccionado")
         self._boton("Finalizar").click()  # una sola exportación
         self.log("[PROD][ESCRITURA] Exportación confirmada una sola vez")
