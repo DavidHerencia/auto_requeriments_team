@@ -397,6 +397,31 @@ class Aris:
         ))
         return any(a.is_visible() for a in avisos.all())
 
+    def diagnostico(self) -> str:
+        """Instantánea de solo lectura para logs; nunca cambia la selección."""
+        data = {}
+        try:
+            data["grupo"] = self._grupo_actual()
+        except Exception as exc:
+            data["grupo_error"] = str(exc)
+        try:
+            data["url"] = self.page.url
+            data["body_loading"] = self.page.locator("body").get_attribute("data-loading")
+            grids = self.page.locator(GRID)
+            if grids.count() == 1:
+                data["grid_busy"] = grids.get_attribute("aria-busy")
+                seleccionados = []
+                for row in grids.locator('tr[__gwt_row]').all():
+                    check = row.locator('input[role="checkbox"]')
+                    if check.count() == 1 and check.is_checked():
+                        rec = self._registro_fila(row)
+                        seleccionados.append(rec.name if rec else "(sin nombre)")
+                data["seleccionados_visibles"] = seleccionados
+            data["alerta_destino_invalido"] = self._alerta_destino_invalido()
+        except Exception as exc:
+            data["dom_error"] = f"{type(exc).__name__}: {exc}"
+        return "; ".join(f"{k}={v!r}" for k, v in data.items())
+
     def _grupo_actual(self) -> str:
         """Carpeta visible en ARIS (no confiar solo en la URL hash)."""
         placeholder = self.page.locator("#headerSearchBox").get_attribute("placeholder") or ""
