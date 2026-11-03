@@ -145,6 +145,17 @@ def _verificar_destino(aris: Aris, destino_url: str,
             "El destino (link 1) debe estar inicialmente vacío para este lote. "
             f"Hay {len(encontrados)} elementos. No se sobrescribirá nada."
         )
+    # El nombre 'atencion_r' no basta: puede repetirse en otro repositorio.
+    # Confirmar su padre y abuelo usando solo la navegación nativa.
+    try:
+        aris.subir_nivel(DESTINO_WIZARD[1])
+        aris.subir_nivel(DESTINO_WIZARD[0])
+    finally:
+        aris.abrir(destino_url, expected=nombre)
+    LOG.info(
+        "Destino validado en la jerarquía %s",
+        " / ".join(DESTINO_WIZARD)
+    )
 
 
 def ejecutar_flujo_2(destino_url: str, origen_url: str, perfil: Path,
