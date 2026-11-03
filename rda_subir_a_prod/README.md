@@ -86,11 +86,11 @@ Estas pruebas unitarias no sustituyen la comprobación de Chrome ni de los diál
 
 ## Corrección: pegado de plantillas y selección BPMN (03/11/2026)
 
-- El aviso *"The target group is a subgroup of one the exclusion groups"* aparece si se intenta pegar un grupo dentro de sí mismo o de un descendiente. Cuando queda seleccionada la fila de \`00 Ejemplo\`, ARIS puede interpretarla como el destino.
+- El aviso *"The target group is a subgroup of one the exclusion groups"* aparece si se intenta pegar un grupo dentro de sí mismo o de un descendiente. Cuando queda seleccionada la fila de `00 Ejemplo`, ARIS puede interpretarla como el destino.
 - La copia se hace ahora mediante dos ubicaciones: dentro del lote se selecciona la plantilla y se pulsa **Copiar**; después se navega a la carpeta raíz y se selecciona explícitamente **Procesados** (el grupo de destino) antes de pulsar **Pegar** una sola vez. Se regresa al lote y se comprueba que apareció exactamente una carpeta nueva.
 - Al mover grupos se limpia cualquier selección anterior del destino antes de pegar. Nunca se usa la casilla de selección global para borrar la selección.
 - Si ARIS muestra el aviso de destino inválido, la operación se detiene **sin repetir el pegado**.
-- El HTML de modelos BPMN muestra \`.itemTitle .titledesc[title]\`, igual que las carpetas. Se diferencia por \`.itemIcon i[aria-label="model"]\`; las carpetas llevan un valor \`aria-label\` que comienza por \`folder\`. Se corrigieron \`listar()\`, \`_row()\` y el renombrado posterior por tipo \`modelo\`.
+- El HTML de modelos BPMN muestra `.itemTitle .titledesc[title]`, igual que las carpetas. Se diferencia por `.itemIcon i[aria-label="model"]`; las carpetas llevan un valor `aria-label` que comienza por `folder`. Se corrigieron `listar()`, `_row()` y el renombrado posterior por tipo `modelo`.
 - Pruebas unitarias añadidas para verificar selección explícita del destino, detección de grupo/modelo y ausencia de reintentos tras un rechazo. Estas pruebas **no han sido ejecutadas contra ARIS corporativo**.
 
-Antes de una nueva ejecución real, inspecciona el árbol del lote interrumpido y elimina o recupera manualmente cualquier duplicado de prueba que no necesites. Ejecuta primero la simulación en una estructura **nueva** y luego una ejecución controlada con una sola carpeta \`- Detalle\` y su plantilla. El robot no reanuda automáticamente operaciones parcialmente completadas.
+Antes de una nueva ejecución real, inspecciona el árbol del lote interrumpido y elimina o recupera manualmente cualquier duplicado de prueba que no necesites. Ejecuta primero la simulación en una estructura **nueva** y luego una ejecución controlada con una sola carpeta `- Detalle` y su plantilla. El robot no reanuda automáticamente operaciones parcialmente completadas.
