@@ -118,7 +118,26 @@ def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
             aris.abrir(url)
             raiz = _raiz_nombre(aris)
             template, records = _mapear(aris)
-            log(f"Encontradas {len(records)} carpetas de detalle. Plantilla: {template}.")
+            log(f"[MAPEO] Carpeta de entrada: {raiz!r}")
+            log(f"[MAPEO] Diagramas a procesar: {len(records)}")
+            for index, record in enumerate(records, 1):
+                log(f"[MAPEO] {index}/{len(records)} {record.carpeta_proceso!r} -> {record.base!r}")
+            log(
+                f"[PLAN DE COPIAS] {len(records)} estructuras en total: "
+                f"1 plantilla original + {max(0, len(records) - 1)} copias nuevas"
+            )
+            log("[MAPEO] Las carpetas Procesados de lotes anteriores se ignoran; "
+                "el mismo N5 puede procesarse en una solicitud nueva")
+            doc["copias"] = {
+                "total_esperado": len(records),
+                "originales": 1,
+                "copias_nuevas_esperadas": max(0, len(records) - 1),
+                "copias_nuevas_observadas": 0,
+                "copias_nuevas_validadas": 0,
+                "estructura_total_validada": 0,
+                "nombres": [template],
+                "incidencias": []
+            }
             doc["raiz"] = raiz
             update(records)
             _preflight_plantilla(aris, url, raiz, template)
@@ -143,17 +162,69 @@ def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
             # Mover la plantilla original dentro del lote. Se reutiliza como
             # primera estructura: hay N procesos, así que se requieren N-1 copias.
             aris.mover_grupo(url, raiz, template, lote_url, lote)
+            log(f"[COPIAS] Plantilla original movida: {template!r} -> {lote!r}")
             aris.abrir(lote_url, expected=lote)
-            template_actual = template
-            # Crear copias ANTES de renombrar cualquier elemento.
-            copias = [template_actual]
-            for _ in range(len(records) - 1):
-                nueva = aris.copiar_plantilla(lote_url, lote, template, url, raiz)
-                copias.append(nueva)
-            if len(set(copias)) != len(records):
-                raise NoConfirmado("Copias duplicadas detectadas: detener para inspección")
+            # El preflight ya comprobó las dos subcarpetas de la plantilla original.
+            copias = [template]
+            doc["copias"]["estructura_total_validada"] = 1
+            save()
+            objetivo = len(records) - 1
+            # Se requieren N estructuras, NO N copias adicionales.
+            for numero in range(1, objetivo + 1):
+                log(
+                    f"[COPIAS] Solicitud {numero}/{objetivo}: "
+                    f"origen={template!r}, destino={lote!r}"
+                )
+                try:
+                    nueva = aris.copiar_plantilla(
+                        lote_url, lote, template, url, raiz
+                    )
+                    doc["copias"]["copias_nuevas_observadas"] += 1
+                    doc["copias"]["nombres"].append(nueva)
+                    save()
+                    log(f"[COPIAS] Grupo nuevo observado {numero}/{objetivo}: {nueva!r}")
+                    # Una copia puede aparecer antes de que termine de cargar
+                    # su contenido. Solo continuar al confirmar ambas subcarpetas.
+                    aris.validar_copia_completa(lote_url, lote, nueva)
+                    doc["copias"]["copias_nuevas_validadas"] += 1
+                    doc["copias"]["estructura_total_validada"] += 1
+                    copias.append(nueva)
+                    save()
+                    log(
+                        f"[COPIAS][OK] {numero}/{objetivo} copias nuevas; "
+                        f"{len(copias)}/{len(records)} estructuras completas"
+                    )
+                except Exception as exc:
+                    descripcion = (
+                        f"copia {numero}/{objetivo}: {type(exc).__name__}: {exc}"
+                    )
+                    doc["copias"]["incidencias"].append(descripcion)
+                    save()
+                    log(f"[COPIAS][DETENIDO] {descripcion}; sin repetir pegado")
+                    raise
+            log(
+                f"[COPIAS][BALANCE] Esperadas={len(records)}, "
+                f"validadas={len(copias)}, "
+                f"nuevas={doc['copias']['copias_nuevas_validadas']}"
+            )
+            if len(copias) != len(records) or len(set(copias)) != len(records):
+                raise NoConfirmado(
+                    f"Cantidad de estructuras no coincide: "
+                    f"esperadas={len(records)}, confirmadas={len(copias)}. "
+                    "No se comenzará a renombrar."
+                )
+            # Una comprobación de lectura antes de renombrar todo el lote.
+            aris.abrir(lote_url, expected=lote)
+            visibles = {x.name for x in aris.listar() if x.kind == "grupo"}
+            faltantes = set(copias) - visibles
+            if faltantes:
+                raise NoConfirmado(
+                    f"Las copias confirmadas ya no aparecen en el lote: "
+                    f"{sorted(faltantes)!r}; no se continuará."
+                )
             for record, copy in zip(records, copias):
                 # Cada copia tiene las dos carpetas obligatorias.
+                log(f"[RENOMBRADO] Plantilla {copy!r} -> {record.base!r}")
                 aris.renombrar(lote_url, lote, copy, record.base)
                 record.plantilla = "ok"
                 update(records)
@@ -231,6 +302,8 @@ def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
         doc["final"] = datetime.now().astimezone().isoformat(timespec="seconds")
         doc["resumen"] = {
             "total": len(records),
+            "estructuras_esperadas": (doc.get("copias") or {}).get("total_esperado", 0),
+            "estructuras_validadas": (doc.get("copias") or {}).get("estructura_total_validada", 0),
             "informes_ok": sum(r.informe == "ok" for r in records),
             "informes_fallidos": sum(r.informe in ("fallo_aris", "error") for r in records),
             "completos": sum(r.mapa == r.diagrama == "ok" for r in records)
