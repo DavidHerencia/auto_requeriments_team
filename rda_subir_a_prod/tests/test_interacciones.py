@@ -110,6 +110,7 @@ class TestInteracciones(unittest.TestCase):
         bot._toolbar = Mock(return_value=MagicMock())
         bot._pegar_una_vez = Mock()
         bot._alerta_destino_invalido = Mock(return_value=False)
+        bot._volver_a_destino_tras_copia = Mock()
         bot.listar = Mock(side_effect=[
             [Item("00 Ejemplo", "grupo")],
             [Item("00 Ejemplo", "grupo"),
@@ -123,13 +124,76 @@ class TestInteracciones(unittest.TestCase):
         self.assertEqual(bot.abrir.call_args_list, [
             call("https://aris.example/lote", expected="Procesados"),
             call("https://aris.example/raiz", expected="Raíz"),
-            call("https://aris.example/lote", expected="Procesados"),
         ])
+        bot._volver_a_destino_tras_copia.assert_called_once_with(
+            destino_url="https://aris.example/lote",
+            destino="Procesados", nivel_padre="Raíz"
+        )
         self.assertEqual(bot.seleccionar.call_args_list, [
             call("00 Ejemplo", "grupo"), call("Procesados", "grupo")
         ])
         bot._toolbar.assert_called_once_with("COPY")
         bot._pegar_una_vez.assert_called_once()
+
+    def test_volver_a_destino_usa_clic_en_nombre_y_no_hash(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot.page.url = "https://aris.example/raiz"
+        bot._grupo_actual = Mock(return_value="Raíz")
+        bot._row = Mock()
+        bot._ready = Mock()
+        link = MagicMock()
+        link.count.return_value = 1
+
+        def set_destino():
+            bot.page.url = "https://aris.example/lote"
+        link.click.side_effect = set_destino
+        bot._row.return_value.locator.return_value = link
+
+        bot._volver_a_destino_tras_copia(
+            "https://aris.example/lote", "Procesados", "Raíz"
+        )
+        bot._row.assert_called_once_with("Procesados", "grupo")
+        bot._row.return_value.locator.assert_called_once_with(
+            ".itemTitle .titledesc a.clickable"
+        )
+        link.click.assert_called_once()
+        bot._ready.assert_called_once_with("Procesados", timeout=60000)
+
+    def test_no_entra_dos_veces_si_aris_ya_esta_en_destino(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot.page.url = "https://aris.example/lote"
+        bot._grupo_actual = Mock(return_value="Procesados")
+        bot._row = Mock()
+        bot._ready = Mock()
+        bot._volver_a_destino_tras_copia(
+            "https://aris.example/lote", "Procesados", "Raíz"
+        )
+        bot._row.assert_not_called()
+        bot._ready.assert_called_once_with("Procesados", timeout=45000)
+
+    def test_nivel_inesperado_detiene_copia_sin_navegar(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot._grupo_actual = Mock(return_value="Otra carpeta")
+        bot._row = Mock()
+        with self.assertRaisesRegex(NoConfirmado, "Otra carpeta"):
+            bot._volver_a_destino_tras_copia(
+                "https://aris.example/lote", "Procesados", "Raíz"
+            )
+        bot._row.assert_not_called()
+
+    def test_url_distinta_detiene_antes_de_buscar_copias(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot.page.url = "https://aris.example/otro-lote"
+        bot._grupo_actual = Mock(return_value="Procesados")
+        bot._ready = Mock()
+        with self.assertRaisesRegex(NoConfirmado, "URL no coincide"):
+            bot._volver_a_destino_tras_copia(
+                "https://aris.example/lote", "Procesados", "Raíz"
+            )
 
     def test_copia_rechazada_no_reintenta_pegado(self):
         bot = Aris(Path("."), Mock())
