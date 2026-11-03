@@ -127,7 +127,9 @@ def _verificar_preparado(aris: Aris, origen_url: str, origen_nombre: str,
 
 
 def _verificar_destino(aris: Aris, destino_url: str,
-                       nombre: str, origen_url: str):
+                       nombre: str, origen_url: str,
+                       codigos_esperados: set[str] | None = None,
+                       continuar_vacios: bool = False) -> set[str]:
     if destino_url == origen_url:
         raise ArisError("Los links 1 y 2 apuntan a la misma carpeta")
     # En el asistente real capturado, el destino es exactamente:
@@ -141,17 +143,36 @@ def _verificar_destino(aris: Aris, destino_url: str,
         )
     aris.abrir(destino_url, expected=nombre)
     encontrados = aris.listar()
+    codigos_esperados = codigos_esperados or set()
+    existentes = {item.name for item in encontrados if item.kind == "grupo"}
     if encontrados:
-        raise ArisError(
-            "El destino (link 1) debe estar inicialmente vacío para este lote. "
-            f"Hay {len(encontrados)} elementos. No se sobrescribirá nada."
+        if not continuar_vacios:
+            raise ArisError(
+                "El Link 1 contiene carpetas de una ejecución anterior. "
+                "No se recrearán ni sobrescribirán automáticamente. "
+                "Para continuar con N5 existentes vacíos, activa expresamente "
+                "'Usar N5 vacíos existentes' tras comprobar el árbol de ARIS."
+            )
+        no_validos = [
+            (item.name, item.kind) for item in encontrados
+            if item.kind != "grupo" or item.name not in codigos_esperados
+        ]
+        if no_validos:
+            raise ArisError(
+                "El destino tiene elementos distintos de los N5 esperados: "
+                f"{no_validos!r}. No se sobrescribirá contenido."
+            )
+        aris.log(
+            f"[PROD][REANUDACION] Detectados {len(existentes)} N5 "
+            f"ya creados: {sorted(existentes)!r}; comprobando que estén vacíos"
         )
     # El nombre 'atencion_r' no basta: podría existir otro homónimo.
     # Verificamos la ruta usando el contenido del repositorio, no solo
     # #headerSearchBox, que en ARIS puede mostrar el padre del grupo
     # SELECCIONADO mientras la tabla muestra sus hijos.
     aris.log(
-        f"[PROD][DESTINO] Carpeta vacía confirmada: {nombre!r}; "
+        f"[PROD][DESTINO] Contenido inicial de {nombre!r}: "
+        f"{len(existentes)} N5 existentes autorizados; "
         "validando cadena 04 PERU / 90 OTROS MODELOS / atencion_r"
     )
     try:
@@ -223,15 +244,33 @@ def _verificar_destino(aris: Aris, destino_url: str,
         # Una navegación completa evita otro cambio de hash que ARIS ignore.
         aris.abrir(destino_url, expected=nombre, reload=True)
         aris.log("[PROD][DESTINO] Link 1 restaurado y verificado")
+    # Reutilizar solo destinos sin contenido. Se lee cada N5 exacto,
+    # no basta con que la carpeta padre tenga el nombre correcto.
+    try:
+        for codigo in sorted(existentes):
+            aris.log(f"[PROD][REANUDACION] Comprobando N5 vacío: {codigo}")
+            aris.entrar(destino_url, nombre, codigo)
+            hijos = aris.listar()
+            if hijos:
+                raise ArisError(
+                    f"El destino N5 {codigo!r} ya contiene {len(hijos)} "
+                    "elementos; se detiene para no sobrescribir producción."
+                )
+            aris.log(f"[PROD][REANUDACION OK] {codigo}: carpeta vacía")
+    finally:
+        if existentes:
+            aris.abrir(destino_url, expected=nombre, reload=True)
     LOG.info(
         "Destino validado por niveles consecutivos: %s",
         " / ".join(DESTINO_WIZARD)
     )
+    return existentes
 
 
 def ejecutar_flujo_2(destino_url: str, origen_url: str, perfil: Path,
                      carpeta_resultados: Path, log: Callable[[str], None],
-                     simular: bool = True) -> Path:
+                     simular: bool = True,
+                     continuar_n5_vacios: bool = False) -> Path:
     destino_url = validar_url(destino_url)
     origen_url = validar_url(origen_url)
     carpeta_resultados.mkdir(parents=True, exist_ok=True)
@@ -241,6 +280,7 @@ def ejecutar_flujo_2(destino_url: str, origen_url: str, perfil: Path,
         "flujo": 2,
         "estado": "iniciado",
         "simulacion": simular,
+        "continuar_n5_vacios": continuar_n5_vacios,
         "inicio": datetime.now().astimezone().isoformat(timespec="seconds"),
         "link1_destino": destino_url,
         "link2_origen": origen_url,
@@ -274,8 +314,15 @@ def ejecutar_flujo_2(destino_url: str, origen_url: str, perfil: Path,
                 update()
             aris.abrir(destino_url)
             destino_nombre = _raiz_nombre(aris)
-            _verificar_destino(
-                aris, destino_url, destino_nombre, origen_url
+            existentes = _verificar_destino(
+                aris, destino_url, destino_nombre, origen_url,
+                codigos_esperados={r.codigo for r in registros},
+                continuar_vacios=continuar_n5_vacios,
+            )
+            doc["n5_reutilizables"] = sorted(existentes)
+            log(
+                f"[PROD][DESTINOS] N5 preexistentes vacíos={len(existentes)}, "
+                f"N5 por crear={len(registros) - len(existentes)}"
             )
             doc["origen_nombre"] = origen_nombre
             doc["destino_nombre"] = destino_nombre
@@ -288,8 +335,17 @@ def ejecutar_flujo_2(destino_url: str, origen_url: str, perfil: Path,
                 doc["estado"] = "simulacion_correcta"
                 log("[PROD][SIMULACION] Preflight completado sin modificar ARIS")
             else:
-                # Crear todos los destinos primero; exactamente 1 clic por grupo.
+                # Crear destinos faltantes; los N5 vacíos previamente
+                # autorizados se reutilizan SIN volver a pulsar Crear grupo.
                 for i, r in enumerate(registros, 1):
+                    if r.codigo in existentes:
+                        r.destino = "reutilizado_vacio"
+                        update()
+                        log(
+                            f"[PROD][CREACION OMITIDA] {i}/{len(registros)} "
+                            f"{r.codigo}: N5 existente y vacío verificado"
+                        )
+                        continue
                     log(
                         f"[PROD][CREACION] {i}/{len(registros)}: "
                         f"{destino_nombre}/{r.codigo}"
@@ -368,6 +424,9 @@ def ejecutar_flujo_2(destino_url: str, origen_url: str, perfil: Path,
         doc["resumen"] = {
             "total": len(registros),
             "destinos_creados": sum(r.destino == "creado" for r in registros),
+            "destinos_reutilizados": sum(
+                r.destino == "reutilizado_vacio" for r in registros
+            ),
             "informes_ok": sum(r.publicacion == "ok" for r in registros),
             "informes_fallidos": sum(
                 r.publicacion == "fallo_aris" for r in registros
