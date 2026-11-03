@@ -2,9 +2,9 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
-from aris import Aris, Item
+from aris import Aris, Item, NoConfirmado
 
 
 class TestInteracciones(unittest.TestCase):
@@ -81,6 +81,72 @@ class TestInteracciones(unittest.TestCase):
         bot._toolbar.assert_called_once_with("LEVEL_UP")
         button.click.assert_called_once()
         bot._ready.assert_called_once_with("Raíz", timeout=60000)
+
+    def test_diagrama_y_carpeta_usan_mismo_selector_de_nombre(self):
+        """El icono de GWT indica el tipo, no la clase .titledesc."""
+        for icon_label, expected_kind in [
+            ("folder web", "grupo"), ("model", "modelo")
+        ]:
+            with self.subTest(icon_label=icon_label):
+                row = MagicMock()
+                title = MagicMock()
+                title.count.return_value = 1
+                title.get_attribute.return_value = "Nombre exacto"
+                icon = MagicMock()
+                icon.count.return_value = 1
+                icon.get_attribute.return_value = icon_label
+                row.locator.side_effect = lambda sel: (
+                    title if sel == ".itemTitle .titledesc[title]" else icon
+                )
+                self.assertEqual(
+                    Aris._registro_fila(row), Item("Nombre exacto", expected_kind)
+                )
+
+    def test_copia_se_pega_con_destino_explicito_y_no_el_origen(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot.abrir = Mock()
+        bot.seleccionar = Mock()
+        bot._toolbar = Mock(return_value=MagicMock())
+        bot._pegar_una_vez = Mock()
+        bot._alerta_destino_invalido = Mock(return_value=False)
+        bot.listar = Mock(side_effect=[
+            [Item("00 Ejemplo", "grupo")],
+            [Item("00 Ejemplo", "grupo"),
+             Item("Copia de 00 Ejemplo", "grupo")],
+        ])
+        copiada = bot.copiar_plantilla(
+            "https://aris.example/lote", "Procesados", "00 Ejemplo",
+            "https://aris.example/raiz", "Raíz"
+        )
+        self.assertEqual(copiada, "Copia de 00 Ejemplo")
+        self.assertEqual(bot.abrir.call_args_list, [
+            call("https://aris.example/lote", expected="Procesados"),
+            call("https://aris.example/raiz", expected="Raíz"),
+            call("https://aris.example/lote", expected="Procesados"),
+        ])
+        self.assertEqual(bot.seleccionar.call_args_list, [
+            call("00 Ejemplo", "grupo"), call("Procesados", "grupo")
+        ])
+        bot._toolbar.assert_called_once_with("COPY")
+        bot._pegar_una_vez.assert_called_once()
+
+    def test_copia_rechazada_no_reintenta_pegado(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot.abrir = Mock()
+        bot.seleccionar = Mock()
+        bot._toolbar = Mock(return_value=MagicMock())
+        bot._pegar_una_vez = Mock()
+        bot.listar = Mock(return_value=[Item("00 Ejemplo", "grupo")])
+        bot._alerta_destino_invalido = Mock(side_effect=[False, True])
+        with self.assertRaisesRegex(NoConfirmado, "rechazó la copia"):
+            bot.copiar_plantilla(
+                "https://aris.example/lote", "Procesados", "00 Ejemplo",
+                "https://aris.example/raiz", "Raíz"
+            )
+        bot._pegar_una_vez.assert_called_once()
+
 
 
 if __name__ == "__main__":
