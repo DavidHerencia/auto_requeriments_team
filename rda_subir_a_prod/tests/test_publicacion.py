@@ -419,6 +419,76 @@ class TestDialogoFinal(unittest.TestCase):
             bot._resultado(baseline=0)
         aceptar.click.assert_not_called()
 
+    def test_importacion_intermedia_y_aviso_final_dos_aceptar_distintos(self):
+        bot, _, _, registrar = self.crear_publicador("no importa")
+        codigo = "7.3.3.12_P01"
+        ruta = (
+            "04 PERU" + chr(92) + "90 OTROS MODELOS" + chr(92) +
+            "atencion_r" + chr(92) + codigo
+        )
+        intermedia = MagicMock()
+        intermedia.inner_text.return_value = (
+            "Importación de escenario\n"
+            f"La información se ha incorporado en la carpeta '{ruta}' "
+            "pulse aceptar"
+        )
+        aceptar_import = MagicMock()
+        aceptar_import.count.return_value = 1
+        aceptar_import.get_attribute.return_value = None
+        intermedia.get_by_role.return_value = aceptar_import
+
+        final = MagicMock()
+        final.inner_text.return_value = (
+            "BBVA - Publicación de modelado de proceso\n"
+            "El informe está completo.\nAceptar"
+        )
+        aceptar_final = MagicMock()
+        aceptar_final.count.return_value = 1
+        aceptar_final.get_attribute.return_value = None
+        final.get_by_role.return_value = aceptar_final
+
+        class DosDialogos:
+            def __init__(self):
+                self.items = iter((intermedia, final))
+            def count(self):
+                return 1
+            @property
+            def first(self):
+                return next(self.items)
+
+        dialogos = DosDialogos()
+        otros = MagicMock()
+        otros.count.return_value = 0
+        bot.page.locator.side_effect = lambda selector: (
+            dialogos if selector == 'div[role="dialog"]:visible' else otros
+        )
+        self.assertTrue(bot._resultado(baseline=0, codigo=codigo))
+        aceptar_import.click.assert_called_once_with()
+        aceptar_final.click.assert_called_once_with()
+        bot.page.wait_for_function.assert_called_once()
+        final.wait_for.assert_called_once_with(
+            state="hidden", timeout=30000
+        )
+        self.assertTrue(any(
+            "[PROD][IMPORTACION OK]" in call.args[0]
+            for call in registrar.call_args_list
+        ))
+        self.assertTrue(any(
+            "[PROD][RESULTADO FINAL]" in call.args[0]
+            for call in registrar.call_args_list
+        ))
+
+    def test_importacion_intermedia_ruta_ajena_no_acepta(self):
+        bot, _, aceptar, _ = self.crear_publicador(
+            "Importación de escenario\n"
+            "La información se ha incorporado en la carpeta "
+            "'04 PERU\\90 OTROS MODELOS\\atencion_r\\OTRO_N5' "
+            "pulse aceptar"
+        )
+        with self.assertRaisesRegex(NoConfirmado, "no confirma la ruta N5"):
+            bot._resultado(baseline=0, codigo="7.3.3.12_P01")
+        aceptar.click.assert_not_called()
+
     def test_historial_anterior_no_sustituye_el_aviso_final(self):
         aris = MagicMock()
         bot = Publicador(aris, Mock())
