@@ -64,16 +64,50 @@ class Publicador:
             )
         return encontrados[0]
 
+    def _vista_arbol(self, tree_id: str) -> list[dict]:
+        """Diagnóstico de SOLO LECTURA de los nodos GWT del asistente."""
+        try:
+            tree = self._dialogo().locator(f'[data-testid="{tree_id}"]')
+            if tree.count() != 1:
+                return [{"error": f"Árbol visible: {tree.count()} coincidencias"}]
+            result = []
+            for node in tree.locator('[role="treeitem"]').all():
+                label = node.locator(".cellTreeItemValue > span[title]").first
+                result.append({
+                    "nivel": node.get_attribute("aria-level"),
+                    "nombre": label.get_attribute("title") if label.count() else None,
+                    "expandido": node.get_attribute("aria-expanded"),
+                    "seleccionado": node.get_attribute("aria-selected"),
+                })
+            return result[:40]
+        except Exception as exc:
+            return [{"error": f"{type(exc).__name__}: {exc}"}]
+
     def _esperar_nodo(self, tree_id: str, name: str, level: int,
                       timeout_seconds: int = 60):
         deadline = time.monotonic() + timeout_seconds
+        next_log = time.monotonic() + 8
+        last_error = ""
         while time.monotonic() < deadline:
             try:
                 return self._nodo(tree_id, name, level)
-            except ArisError:
+            except ArisError as exc:
+                last_error = str(exc)
+                if time.monotonic() >= next_log:
+                    self.log(
+                        f"[PROD][ARBOL][ESPERA] {tree_id}: buscando {name!r} "
+                        f"nivel={level}; presentes={self._vista_arbol(tree_id)!r}"
+                    )
+                    next_log = time.monotonic() + 8
                 self.page.wait_for_timeout(350)
+        snapshot = self._vista_arbol(tree_id)
+        self.log(
+            f"[PROD][ARBOL][ERROR] {tree_id}: grupo {name!r} no visible; "
+            f"ultima_error={last_error}; nodos={snapshot!r}"
+        )
         raise NoConfirmado(
-            f"Árbol {tree_id}: no se mostró {name!r} en nivel {level}"
+            f"Árbol {tree_id}: no se mostró {name!r} en nivel {level}; "
+            f"nodos visibles={snapshot!r}. No se repetirá el informe."
         )
 
     def _expandir(self, tree_id: str, name: str, level: int):
