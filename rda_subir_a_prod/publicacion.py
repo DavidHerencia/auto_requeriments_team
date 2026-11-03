@@ -352,9 +352,20 @@ class Publicador:
                 "No se pulsó Finalizar."
             )
         self.log("[PROD][ASISTENTE] Resumen de exportación inspeccionado")
-        self._boton("Finalizar").click()  # una sola exportación
-        self.log("[PROD][ESCRITURA] Exportación confirmada una sola vez")
+        self.log(
+            "[PROD][EXPORTACION] Resumen válido; pulsando Finalizar "
+            "de exportación (NO es aún la publicación definitiva)"
+        )
+        self._boton("Finalizar").click()  # un solo clic
+        self.log(
+            "[PROD][EXPORTACION] Finalizar de exportación pulsado una vez; "
+            "esperando asistente para seleccionar destino de producción"
+        )
         self._esperar_paso("TREE_P2", timeout=360000)
+        self.log(
+            "[PROD][EXPORTACION OK] Asistente de destino disponible; "
+            "todavía NO se ha pulsado el Finalizar definitivo"
+        )
 
     def _destino(self, codigo: str):
         for nivel, carpeta in enumerate(DESTINO_WIZARD, start=1):
