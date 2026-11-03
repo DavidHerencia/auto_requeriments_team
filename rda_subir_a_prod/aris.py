@@ -139,16 +139,29 @@ class Aris:
             raise ArisError(f"Se esperaba una sola tabla visible; encontradas {g.count()}")
         return g
 
+    @staticmethod
+    def _registro_fila(row) -> Item | None:
+        """Carpeta y BPMN comparten .itemTitle; se distinguen por el icono GWT."""
+        title = row.locator(".itemTitle .titledesc[title]")
+        icon = row.locator(".itemIcon i[aria-label]")
+        if title.count() != 1 or icon.count() != 1:
+            return None
+        name = (title.get_attribute("title") or "").strip()
+        icon_name = (icon.get_attribute("aria-label") or "").strip().lower()
+        if not name:
+            return None
+        if icon_name.startswith("folder"):
+            return Item(name, "grupo")
+        if icon_name == "model":
+            return Item(name, "modelo")
+        raise ArisError(f"Tipo de elemento ARIS no reconocido: {icon_name!r} ({name})")
+
     def _visible_records(self) -> list[Item]:
         output = []
         for row in self._grid().locator('tr[__gwt_row]').all():
-            group = row.locator('.itemTitle .titledesc[title]')
-            if group.count() == 1:
-                output.append(Item(group.get_attribute("title").strip(), "grupo"))
-                continue
-            model = row.locator('.dataGridCell div.title a.clickable')
-            if model.count() == 1:
-                output.append(Item(model.inner_text().strip(), "modelo"))
+            item = self._registro_fila(row)
+            if item is not None:
+                output.append(item)
         return output
 
     def _scroll_grid(self, reset=False) -> bool:
@@ -193,13 +206,8 @@ class Aris:
         for _ in range(180):
             matches = []
             for row in self._grid().locator('tr[__gwt_row]').all():
-                if kind == "grupo":
-                    title = row.locator(".itemTitle .titledesc[title]")
-                    actual = title.get_attribute("title").strip() if title.count() == 1 else None
-                else:
-                    title = row.locator(".dataGridCell div.title a.clickable")
-                    actual = title.inner_text().strip() if title.count() == 1 else None
-                if actual == name:
+                actual = self._registro_fila(row)
+                if actual == Item(name, kind):
                     matches.append(row)
             if len(matches) == 1:
                 return matches[0]
@@ -217,12 +225,30 @@ class Aris:
         self._ready(child_name, timeout=60000)
         return self.page.url
 
+    def _limpiar_seleccion(self):
+        """Desmarca filas, incluso si la tabla GWT está virtualizada.
+
+        Nunca usar la casilla de cabecera: podría seleccionar TODAS las filas.
+        """
+        self._scroll_grid(reset=True)
+        for _ in range(180):
+            rows = self._grid().locator('tr[__gwt_row]').all()
+            for row in rows:
+                ch = row.locator('input[role="checkbox"]')
+                if ch.count() == 1 and ch.is_checked():
+                    row.locator("label.checkbox").click()
+            if not self._scroll_grid():
+                break
+            self.page.wait_for_timeout(80)
+        else:
+            raise ArisError("No se pudo limpiar completamente la selección")
+        self._scroll_grid(reset=True)
+        visibles = self._grid().locator('tr[__gwt_row] input[role="checkbox"]:checked')
+        if visibles.count():
+            raise ArisError("Quedaron filas marcadas; no se puede continuar")
+
     def seleccionar(self, name: str, kind: str = "grupo"):
-        # Desmarcar únicamente casillas de filas, nunca la casilla global.
-        for row in self._grid().locator('tr[__gwt_row]').all():
-            ch = row.locator('input[role="checkbox"]')
-            if ch.count() == 1 and ch.is_checked():
-                row.locator("label.checkbox").click()
+        self._limpiar_seleccion()
         row = self._row(name, kind)
         check = row.locator('input[role="checkbox"]')
         if check.count() != 1:
@@ -360,27 +386,62 @@ class Aris:
         self._esperar_nombre(name)
         self.log(f"Movido: {name} -> {dst_parent}")
 
+    def _alerta_destino_invalido(self) -> bool:
+        """Detecta el aviso observado de ARIS sin intentar otro pegado."""
+        avisos = self.page.get_by_text(re.compile(
+            r"target group is a subgroup|procedure will be canceled|"
+            r"grupo de destino es un subgrupo|se cancelará el procedimiento",
+            re.I,
+        ))
+        return any(a.is_visible() for a in avisos.all())
+
     def copiar_plantilla(self, parent_url: str, parent_name: str,
-                         plantilla: str = TEMPLATE) -> str:
+                         plantilla: str, grandparent_url: str,
+                         grandparent_name: str) -> str:
+        """Copiar plantilla al mismo nivel: elegir el destino explícitamente.
+
+        En ARIS, pegar teniendo el origen seleccionado intenta pegar DENTRO
+        de ese origen y ARIS rechaza la operación por descendencia.
+        Elegimos como destino el grupo padre desde la vista de su propio padre.
+        """
         self.abrir(parent_url, expected=parent_name)
-        antes = {i.name for i in self.listar()}
+        antes = {i.name for i in self.listar() if i.kind == "grupo"}
         if plantilla not in antes:
-            raise ArisError("No se encontró plantilla para copiar")
-        self.seleccionar(plantilla)
-        self._toolbar("COPY").click()
-        self._pegar_una_vez()
+            raise ArisError(f"No se encontró la plantilla {plantilla!r} para copiar")
+        self.seleccionar(plantilla, "grupo")
+        self._toolbar("COPY").click()  # solo copia al portapapeles GWT
+
+        # Elegir explícitamente <Procesados> como destino desde la raíz.
+        # Se preserva la misma pestaña y sesión para no perder el portapapeles GWT.
+        self.abrir(grandparent_url, expected=grandparent_name)
+        self.seleccionar(parent_name, "grupo")
+        if self._alerta_destino_invalido():
+            raise NoConfirmado("ARIS mostraba una alerta de destino inválido; no se pegó")
+        self._pegar_una_vez()  # exactamente un intento de escritura
+
+        # Volver al interior del destino y comprobar qué grupo se creó.
+        self.abrir(parent_url, expected=parent_name)
         deadline = time.monotonic() + self.timeout / 1000
         while time.monotonic() < deadline:
-            despues = {i.name for i in self.listar()}
+            if self._alerta_destino_invalido():
+                raise NoConfirmado(
+                    "ARIS rechazó la copia: el grupo destino es descendiente del origen. "
+                    "No se intentó pegar nuevamente."
+                )
+            despues = {i.name for i in self.listar() if i.kind == "grupo"}
             nuevos = despues - antes
             if len(nuevos) == 1:
                 copied = next(iter(nuevos))
-                self.log(f"Plantilla copiada como {copied}")
+                self.log(f"Plantilla copiada en {parent_name}: {copied}")
                 return copied
             if len(nuevos) > 1:
-                break
+                raise NoConfirmado(
+                    f"Se detectaron varias carpetas nuevas ({sorted(nuevos)}); revisar manualmente"
+                )
             self.page.wait_for_timeout(350)
-        raise NoConfirmado("No se pudo identificar UNA copia nueva de 00 Ejemplo")
+        raise NoConfirmado(
+            f"ARIS no confirmó una copia nueva de {plantilla!r}; no reintentar automáticamente"
+        )
 
     def _seleccionar_reporte(self, target: str):
         tab = self.page.locator('li[data-testid="REPORT_REPOSITORY_BUTTON"]')
