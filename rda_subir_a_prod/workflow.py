@@ -219,15 +219,9 @@ def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
                     f"esperadas={len(records)}, confirmadas={len(copias)}. "
                     "No se comenzará a renombrar."
                 )
-            # Una comprobación de lectura antes de renombrar todo el lote.
-            aris.abrir(lote_url, expected=lote)
-            visibles = {x.name for x in aris.listar() if x.kind == "grupo"}
-            faltantes = set(copias) - visibles
-            if faltantes:
-                raise NoConfirmado(
-                    f"Las copias confirmadas ya no aparecen en el lote: "
-                    f"{sorted(faltantes)!r}; no se continuará."
-                )
+            # Confirmar el conjunto final mediante lectura reactiva:
+            # ARIS puede tardar en refrescar la tabla aunque las copias existan.
+            aris.esperar_grupos(lote_url, lote, set(copias))
             for record, copy in zip(records, copias):
                 # Cada copia tiene las dos carpetas obligatorias.
                 log(f"[RENOMBRADO] Plantilla {copy!r} -> {record.base!r}")
