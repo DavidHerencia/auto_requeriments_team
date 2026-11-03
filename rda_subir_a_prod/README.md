@@ -107,3 +107,16 @@ Se observó que, tras el primer pegado, ARIS quedaba en la carpeta raíz con **P
 - Nuevas pruebas de lógica cubren navegación manual equivalente, destino ya abierto, nombre inesperado y URL de otro lote. Estas pruebas no sustituyen una ejecución controlada en la sesión corporativa.
 
 **Siguiente prueba recomendada:** usar dos procesos `- Detalle` y una plantilla, en una carpeta limpia. Revisar en los logs la secuencia `Destino para pegar confirmado` → `Pegado solicitado` → `Volviendo a ... mediante clic` → `Destino confirmado` → `Plantilla copiada`. No reanudar automáticamente un lote interrumpido.
+
+## Contadores, esperas y diagnóstico de copias (03/11/2026)
+
+El **número de carpetas finales** coincide con el número de diagramas. Si hay 3 diagramas, se mueven **1 plantilla original + 2 copias nuevas = 3 estructuras**. No son 3 copias adicionales. Cada nueva copia se comprueba dentro de su propia carpeta hasta ver `00 Procesos` y `01 Mapas y Catálogos`, sin emitir un segundo pegado.
+
+- La validación de URL después de copiar ya no falla solo porque ARIS regenere la ruta del grupo: utiliza el contexto del repositorio, el grupo visible y comprueba el contenido.
+- El robot observa la aparición de carpetas y espera a que terminen de aparecer sus subcarpetas. Solo **cuando no hay confirmación dentro del plazo límite** se registra un error; las escrituras no se reintentan.
+- El JSON registra `copias.total_esperado`, `copias.originales`, `copias.copias_nuevas_esperadas`, `copias.copias_nuevas_observadas`, `copias.copias_nuevas_validadas`, `copias.estructura_total_validada`, `copias.nombres` e `incidencias`.
+- Se añadieron logs `[MAPEO]`, `[PLAN DE COPIAS]`, `[COPIAS]`, `[COPIA][ESPERA]`, `[COPIA][ESTRUCTURA]` y `[RENOMBRADO]`. Cuando la copia falla, también aparece `[COPIAS][DIAGNOSTICO]`: grupo visible, URL, estado de carga, selección visible y alerta.
+- La miniinterfaz tiene **Abrir logs** y **Abrir reportes JSON**. Los archivos anteriores permanecen guardados en `%LOCALAPPDATA%\\rda_subir_a_prod\\logs` y `%LOCALAPPDATA%\\rda_subir_a_prod\\resultados`. Los nuevos logs incluyen un nombre único por ejecución.
+- Se permite **volver a procesar el mismo N5** en una solicitud posterior siempre que haya una nueva estructura de entrada. Las carpetas `Procesados ...` de ejecuciones anteriores no se consideran diagramas nuevos ni bloquean el mapeo. Un intento de reanudar una ejecución **parcialmente movida** sigue sin ser automático: hay que inspeccionar el árbol antes de repetirla.
+
+**No se ha ejecutado esta versión contra tu sesión corporativa**. Los cambios de esta etapa afectan principalmente el control de copias, diagnósticos y la pantalla de logs; los informes y el renombrado final no se modificaron.
