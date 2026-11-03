@@ -440,7 +440,8 @@ class Aris:
             raise ArisError(
                 f"No hay un enlace único para entrar en {destino!r}"
             )
-        link.click()  # navegación de lectura: no repite ninguna escritura
+        # Igual que entrar(): la apertura con doble clic ya funciona en ARIS.
+        link.dblclick()  # navegación de lectura; no repite ninguna escritura
         try:
             self._ready(destino, timeout=60000)
         except ArisError as exc:
