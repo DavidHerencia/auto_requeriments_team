@@ -567,7 +567,18 @@ class Aris:
         Se espera reactivamente la presencia de las dos subcarpetas.
         """
         self.log(f"[COPIA][ESTRUCTURA] Entrando a {copia!r} para validar contenido")
-        self.entrar(lote_url, lote, copia)
+        # La copia acaba de confirmarse dentro del lote. Evitar volver a
+        # cambiar el hash cuando ARIS ya se encuentra en esa misma carpeta:
+        # hacerlo podría introducir una navegación innecesaria o bloqueada.
+        if self._grupo_actual() == lote:
+            row = self._row(copia, "grupo")
+            link = row.locator(".itemTitle .titledesc a.clickable")
+            if link.count() != 1:
+                raise ArisError(f"No se encontró un enlace único hacia la copia {copia!r}")
+            link.dblclick()
+            self._ready(copia, timeout=60000)
+        else:
+            self.entrar(lote_url, lote, copia)
         deadline = time.monotonic() + max(self.timeout / 1000, 120)
         requeridas = {PROCESOS, MAPAS}
         next_log = 0
