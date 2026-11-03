@@ -277,46 +277,100 @@ class Publicador:
         self.log(f"[PROD][PUBLICACION] Enviada una vez al destino {got}")
 
     def _resultado(self, baseline: int) -> bool:
+        """Esperar el aviso terminal de ARIS y pulsar Aceptar UNA sola vez.
+
+        El historial en la barra lateral puede incluir ejecuciones anteriores
+        o actualizarse antes que el diálogo: nunca se toma como confirmación
+        suficiente para abandonar esta etapa ni para publicar otra vez.
+        """
         deadline = time.monotonic() + 600
         next_log = 0
+        aviso_historial = None
+        exitos = re.compile(
+            r"el informe est[aá] completo|el informe ha concluido|"
+            r"el informe se ha completado|la generaci[oó]n del informe ha concluido",
+            re.I
+        )
+        fallos = re.compile(
+            r"cancelad[oa]s?|ha fallado|ha sido fallid[oa]|"
+            r"fall[oó]|con errores|se ha producido un error|"
+            r"ha ocurrido un error|no se pudo|no se ha podido",
+            re.I
+        )
         while time.monotonic() < deadline:
             dialogs = self.page.locator('div[role="dialog"]:visible')
+            if dialogs.count() > 1:
+                raise NoConfirmado(
+                    "Aparecieron varios diálogos de ARIS después de publicar. "
+                    "No se pulsará Aceptar a ciegas."
+                )
             if dialogs.count() == 1:
                 d = dialogs.first
-                text = d.inner_text()
-                if "El informe está completo." in text:
-                    button = d.get_by_role("button", name="Aceptar")
-                    if button.count() != 1:
-                        raise NoConfirmado("Informe completo sin botón Aceptar único")
-                    button.click()
-                    self.log("[PROD][RESULTADO] ARIS confirmó informe completo")
-                    return True
-                if re.search(r"cancelad[oa]|ha fallado|con errores|se ha producido un error", text, re.I):
-                    self.log(f"[PROD][RESULTADO] ARIS informó fallo: {text[:300]}")
-                    return False
+                content = d.inner_text().strip()
+                # No aceptar por accidente el asistente de selección ni la
+                # ventana de progreso (que puede tener botón Cancelar).
+                status = (
+                    "ok" if exitos.search(content)
+                    else "fallo_aris" if fallos.search(content)
+                    else None
+                )
+                if status:
+                    aceptar = d.get_by_role("button", name="Aceptar", exact=True)
+                    if aceptar.count() != 1:
+                        raise NoConfirmado(
+                            f"ARIS mostró resultado {status} pero no un Aceptar "
+                            "único. No se repetirá la publicación."
+                        )
+                    if (aceptar.get_attribute("aria-disabled") == "true" or
+                            aceptar.get_attribute("disabled") is not None):
+                        raise NoConfirmado(
+                            "El botón Aceptar del resultado está deshabilitado."
+                        )
+                    self.log(
+                        f"[PROD][RESULTADO] Resultado explícito de ARIS: "
+                        f"{status}; mensaje={content[:500]!r}"
+                    )
+                    aceptar.click()  # único Aceptar: cerrar el resultado final
+                    self.log("[PROD][RESULTADO] Aceptar final pulsado una sola vez")
+                    try:
+                        d.wait_for(state="hidden", timeout=30000)
+                    except PWTimeout as exc:
+                        raise NoConfirmado(
+                            "Se pulsó Aceptar, pero no se confirmó el cierre "
+                            "de la ventana final. No se repetirá el clic."
+                        ) from exc
+                    self.log(
+                        f"[PROD][RESULTADO FINAL] Diálogo cerrado. "
+                        f"publicación={status}. Sin reintentos."
+                    )
+                    return status == "ok"
+
+            # Información complementaria, nunca criterio para dar éxito:
+            # el panel conserva informes de ejecuciones anteriores.
             rows = self.page.locator(
                 REPORT_PANEL + ' .finished-report-item-row'
             )
-            if rows.count() > baseline:
-                # Nunca aceptar un estado histórico: solo entradas posteriores
-                # al inicio de ESTE informe; deben identificar publicación.
-                for ix in range(baseline, rows.count()):
+            if rows.count() > baseline and aviso_historial is None:
+                for ix in range(rows.count()):
                     txt = rows.nth(ix).inner_text()
-                    if PUBLICACION not in txt:
-                        continue
-                    if "La generación del informe ha concluido." in txt:
-                        self.log("[PROD][RESULTADO] Nuevo informe marcado como concluido")
-                        return True
-                    if re.search(r"cancelad[oa]|ha fallado|con errores", txt, re.I):
-                        self.log(f"[PROD][RESULTADO] Nuevo informe falló: {txt[:260]}")
-                        return False
+                    if PUBLICACION in txt:
+                        aviso_historial = txt[:350]
+                        self.log(
+                            f"[PROD][HISTORIAL] Entrada visible (aún no "
+                            f"confirmación final): {aviso_historial!r}"
+                        )
+                        break
             if time.monotonic() >= next_log:
-                self.log("[PROD][ESPERA] Esperando confirmación del informe, sin reintentos")
+                self.log(
+                    "[PROD][ESPERA FINAL] Esperando aviso explícito de éxito "
+                    "o fallo de ARIS y su botón Aceptar. Sin reintentos."
+                )
                 next_log = time.monotonic() + 15
             self.page.wait_for_timeout(500)
         raise NoConfirmado(
-            "La publicación se lanzó pero ARIS no confirmó el resultado. "
-            "Revisar manualmente; NO volver a ejecutar automáticamente."
+            "ARIS no mostró un resultado final reconocible con Aceptar. "
+            "El informe ya fue enviado; revisar el historial y el diálogo "
+            "manualmente. No se volverá a ejecutar automáticamente."
         )
 
     def publicar(self, source_url: str, source_name: str, detalle: str,
