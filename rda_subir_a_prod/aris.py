@@ -104,10 +104,23 @@ class Aris:
                 }""", arg=expected, timeout=timeout
             )
         except PWTimeout as exc:
-            raise ArisError(
-                "ARIS no quedó listo o no se confirmó la carpeta. "
-                "Completa el SSO manualmente y vuelve a validar; no se repitió ninguna acción."
-            ) from exc
+            # No confundir un encabezado de repositorio desfasado con SSO.
+            # ARIS puede cambiar la carpeta central antes que Buscar en: ... .
+            current = self.page.url
+            try:
+                visible = self._grupo_actual()
+            except Exception:
+                visible = "(no disponible)"
+            if "idp." in urlsplit(current).hostname if urlsplit(current).hostname else False:
+                msg = "La sesión pasó a SSO; completa la autenticación manual."
+            else:
+                msg = (
+                    "ARIS no confirmó la carpeta esperada en su encabezado. "
+                    f"Esperada={expected!r}, cabecera visible={visible!r}, "
+                    f"URL actual={current!r}. "
+                    "Puede ser navegación desfasada; no se repite ninguna acción."
+                )
+            raise ArisError(msg) from exc
         self.page.locator(GRID).first.wait_for(state="visible", timeout=self.timeout)
 
     def abrir(self, url: str, expected: str | None = None, reload: bool = False):
