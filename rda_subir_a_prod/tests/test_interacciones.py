@@ -242,6 +242,26 @@ class TestInteracciones(unittest.TestCase):
         bot._ready.assert_called_once_with("00 Ejemplo(1)", timeout=60000)
         bot.subir_nivel.assert_called_once_with("Procesados")
 
+    def test_balance_final_espera_refresco_antes_de_continuar(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot._grupo_actual = Mock(return_value="Procesados")
+        bot.abrir = Mock()
+        bot.listar = Mock(side_effect=[
+            [Item("00 Ejemplo", "grupo"),
+             Item("00 Ejemplo(1)", "grupo")],
+            [Item("00 Ejemplo", "grupo"),
+             Item("00 Ejemplo(1)", "grupo"),
+             Item("00 Ejemplo(2)", "grupo")],
+        ])
+        bot.esperar_grupos(
+            "https://aris.example/lote", "Procesados",
+            {"00 Ejemplo", "00 Ejemplo(1)", "00 Ejemplo(2)"}
+        )
+        self.assertEqual(bot.listar.call_count, 2)
+        bot.abrir.assert_not_called()
+        bot.page.wait_for_timeout.assert_called_once_with(400)
+
     def test_copia_rechazada_no_reintenta_pegado(self):
         bot = Aris(Path("."), Mock())
         bot.page = MagicMock()
