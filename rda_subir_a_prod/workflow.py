@@ -186,6 +186,9 @@ def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
                     # Una copia puede aparecer antes de que termine de cargar
                     # su contenido. Solo continuar al confirmar ambas subcarpetas.
                     aris.validar_copia_completa(lote_url, lote, nueva)
+                    # Después de subir de nivel, usar la URL confirmada por ARIS.
+                    # Algunos grupos movidos pueden recibir una ruta nueva.
+                    lote_url = aris.page.url
                     doc["copias"]["copias_nuevas_validadas"] += 1
                     doc["copias"]["estructura_total_validada"] += 1
                     copias.append(nueva)
