@@ -181,3 +181,20 @@ Si no se presenta un nodo, los logs `[PROD][ARBOL][ESPERA]` y `[PROD][ARBOL][ERR
 - La casilla **no se recuerda al reiniciar**, de modo que un nuevo lote requiere autorizar nuevamente la continuación.
 
 **Prueba recomendada:** comprobar visualmente que los dos N5 anteriores están vacíos; marcar la opción de continuación; ejecutar **Validar flujo 2 (sin cambios)**. Si el preflight confirma ambos, desmarcar `Simulación` y ejecutar con confirmación explícita para completar los asistentes. El informe anterior fue lanzado, pero no completó su selección; revisar el historial antes de repetir cualquier publicación. No se ha probado aún esta versión en ARIS corporativo.
+
+## Ajuste del resumen de exportación y destino con otros lotes (03/11/2026)
+
+Hallazgo confirmado por el log `05:19:22`: el asistente seleccionó correctamente `TREE_P0` y `TREE_P1`, pero `TEXTO_RESUMEN_P2` contenía **AMBAS** secciones (`Grupos de escenario` y `Grupos y Modelos de Catálogo`). `TEXTO_PROC_MOD_P2` estaba vacío. La validación antigua exigía un mapa en ese segundo campo, lanzó `ArisError` antes de `Finalizar`, y el contexto `with Aris(...)` cerró Chrome al terminar. **No se había pulsado el primer Finalizar.**
+
+Corrección: leer el único `TEXTO_RESUMEN_P2`, extraer por separado los nombres de grupo `[G]` bajo cada encabezado y comparar **nombres completos exactos** con el grupo `- Detalle` y el grupo de mapas sin sufijo. Solo después de validar pulsar `Finalizar` de exportación una vez y esperar `TREE_P2`, el asistente del destino. El segundo `Finalizar` sigue siendo el de publicación definitiva. Los logs separan `[PROD][RESUMEN EXPORT]`, `[PROD][EXPORTACION]`, `[PROD][DESTINO]` y `[PROD][PUBLICACION]`.
+
+Se revisaron además las capturas del cierre del informe: después del segundo `Finalizar` puede aparecer **Importación de escenario** con el mensaje de incorporación en `04 PERU\\90 OTROS MODELOS\\atencion_r\\<N5>`; comprobar ruta y pulsar **Aceptar intermedio** una vez, y solo después esperar el aviso final de **BBVA - Publicación de modelado de proceso** y su **Aceptar final**. Si la ruta no coincide, no se acepta. No reintentar el informe.
+
+**Nuevo comportamiento de Link 1**: `atencion_r` puede contener cualquier cantidad de carpetas de otras solicitudes. El robot las deja intactas. Mapea únicamente los códigos que aparecen en Link 2:
+- Si falta un código N5, crea su carpeta.
+- Si existe un grupo con el mismo código, exige la casilla de continuación y verifica que el grupo esté completamente vacío antes de reutilizarlo.
+- Si existe un objeto o modelo con el mismo código, o una carpeta N5 del lote con contenido, se detiene para no provocar colisiones o sobrescrituras.
+
+La casilla de continuación **no está limitada a los dos códigos de la prueba** y no impide crear nuevos códigos. Los logs muestran `[PROD][DESTINO][INVENTARIO]`, N5 existentes, N5 por crear y otros elementos conservados.
+
+Se añadieron pruebas unitarias del resumen, carpetas ajenas, mezcla de grupos existentes y faltantes, y ambas confirmaciones de la publicación. **No se han ejecutado las pruebas ni el informe real desde aquí**: probar localmente con `python -m unittest discover -s tests -v`, luego validar el flujo y observar los pasos.
