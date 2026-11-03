@@ -120,3 +120,34 @@ El **número de carpetas finales** coincide con el número de diagramas. Si hay 
 - Se permite **volver a procesar el mismo N5** en una solicitud posterior siempre que haya una nueva estructura de entrada. Las carpetas `Procesados ...` de ejecuciones anteriores no se consideran diagramas nuevos ni bloquean el mapeo. Un intento de reanudar una ejecución **parcialmente movida** sigue sin ser automático: hay que inspeccionar el árbol antes de repetirla.
 
 **No se ha ejecutado esta versión contra tu sesión corporativa**. Los cambios de esta etapa afectan principalmente el control de copias, diagnósticos y la pantalla de logs; los informes y el renombrado final no se modificaron.
+
+## Flujo 2 · Publicación en producción (03/11/2026)
+
+**Entradas de la misma miniinterfaz**:
+- **Link 1**: destino vacío de producción. Debe apuntar exactamente a `04 PERU / 90 OTROS MODELOS / atencion_r`; no se admite otro `atencion_r` con la misma etiqueta pero diferente jerarquía. Se confirma subiendo de nivel por la interfaz.
+- **Link 2**: carpeta de origen con los procesos revisados. Ejemplo: `3.3.1.1_P03 Diseño y mantenimiento de segmentos de clientes PN` con `00 Procesos / <nombre> - Detalle / <modelo>` y `01 Mapas y Catálogos / <nombre> / <modelo>`.
+- **Link 3**: reservado, no participa en estos flujos.
+
+**Validar flujo 2 (sin cambios)** comprueba que cada grupo tenga un código N5 único, los dos subgrupos obligatorios, un grupo `- Detalle` y sus modelos esperados; comprueba que el destino esté vacío y esté bajo los padres correctos. Todo ello sucede antes de cualquier escritura.
+
+**Ejecutar flujo 2** con `Simulación` desmarcada y confirmación explícita:
+1. Crear bajo `atencion_r` un grupo **solo con el código N5** por proceso, verificar cada creación, y validar todos los destinos.
+2. Por proceso, seleccionar la carpeta `00 Procesos` del origen; elegir el informe `BBVA - Publicación de modelado de proceso` en formato XML.
+3. En la primera ventana, seleccionar el grupo `<nombre> - Detalle` y luego el mapa/catálogo `<nombre>`. Comprobar el resumen antes de `Finalizar`.
+4. En la segunda ventana elegir `04 PERU / 90 OTROS MODELOS / atencion_r / <código N5>`. Comprobar la **ruta exacta** y las políticas de conflicto informadas por ARIS, marcar la casilla y pulsar `Finalizar` **una sola vez**.
+5. Esperar el **aviso final de ARIS**: si informa que el informe está completo, registrar `ok`; si indica cancelación o error, registrar `fallo_aris`. En ambos casos pulsar **Aceptar una sola vez**, comprobar que se cerró la ventana y continuar al siguiente proceso. Nunca usar solo una fila histórica del panel como confirmación. Si no puede confirmarse la ejecución, registrar `no_confirmado` y detener la publicación para evitar duplicados.
+
+**Advertencia**: en el resumen del asistente proporcionado, ARIS muestra que el **origen sobrescribe el destino** para modelos, objetos y conexiones. Esta política requiere una confirmación explícita antes de la ejecución real; el bot no la modifica.
+
+En `resultados/flujo2_*.json` se guarda cada código N5 con estado de carpeta destino, publicación, errores y resumen. Los logs señalan `[PROD][MAPEO]`, `[PROD][PREFLIGHT]`, `[PROD][CREACION]`, `[PROD][ARBOL]`, `[PROD][ESPERA FINAL]` y `[PROD][RESULTADO FINAL]`.
+
+### Ejecución local
+
+```powershell
+git pull origin main
+cd rda_subir_a_prod
+python -m unittest discover -s tests -v
+python app.py
+```
+
+Primero probar **Validar flujo 2 (sin cambios)**. El código y los tests offline no equivalen a una validación en ARIS real; no se ha ejecutado el flujo de publicación dentro de la sesión corporativa desde aquí. No reiniciar el lote automáticamente si quedó una publicación indeterminada.
