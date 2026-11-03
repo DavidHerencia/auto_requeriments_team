@@ -201,9 +201,12 @@ def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
                     descripcion = (
                         f"copia {numero}/{objetivo}: {type(exc).__name__}: {exc}"
                     )
+                    contexto = aris.diagnostico()
                     doc["copias"]["incidencias"].append(descripcion)
+                    doc["copias"]["ultimo_contexto"] = contexto
                     save()
                     log(f"[COPIAS][DETENIDO] {descripcion}; sin repetir pegado")
+                    log(f"[COPIAS][DIAGNOSTICO] {contexto}")
                     raise
             log(
                 f"[COPIAS][BALANCE] Esperadas={len(records)}, "
