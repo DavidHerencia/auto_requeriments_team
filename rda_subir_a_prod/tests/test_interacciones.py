@@ -135,7 +135,7 @@ class TestInteracciones(unittest.TestCase):
         bot._toolbar.assert_called_once_with("COPY")
         bot._pegar_una_vez.assert_called_once()
 
-    def test_volver_a_destino_usa_clic_en_nombre_y_no_hash(self):
+    def test_volver_a_destino_usa_navegacion_ui_y_no_hash(self):
         bot = Aris(Path("."), Mock())
         bot.page = MagicMock()
         bot.page.url = "https://aris.example/raiz"
@@ -147,7 +147,7 @@ class TestInteracciones(unittest.TestCase):
 
         def set_destino():
             bot.page.url = "https://aris.example/lote"
-        link.click.side_effect = set_destino
+        link.dblclick.side_effect = set_destino
         bot._row.return_value.locator.return_value = link
 
         bot._volver_a_destino_tras_copia(
@@ -157,7 +157,7 @@ class TestInteracciones(unittest.TestCase):
         bot._row.return_value.locator.assert_called_once_with(
             ".itemTitle .titledesc a.clickable"
         )
-        link.click.assert_called_once()
+        link.dblclick.assert_called_once()
         bot._ready.assert_called_once_with("Procesados", timeout=60000)
 
     def test_no_entra_dos_veces_si_aris_ya_esta_en_destino(self):
