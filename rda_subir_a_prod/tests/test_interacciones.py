@@ -184,16 +184,38 @@ class TestInteracciones(unittest.TestCase):
             )
         bot._row.assert_not_called()
 
-    def test_url_distinta_detiene_antes_de_buscar_copias(self):
+    def test_url_regenerada_no_bloquea_si_el_contexto_es_correcto(self):
         bot = Aris(Path("."), Mock())
         bot.page = MagicMock()
-        bot.page.url = "https://aris.example/otro-lote"
+        bot.page.url = "https://aris.example/ruta-regenerada"
         bot._grupo_actual = Mock(return_value="Procesados")
         bot._ready = Mock()
-        with self.assertRaisesRegex(NoConfirmado, "URL no coincide"):
-            bot._volver_a_destino_tras_copia(
-                "https://aris.example/lote", "Procesados", "Raíz"
-            )
+        bot._row = Mock()
+        bot._volver_a_destino_tras_copia(
+            "https://aris.example/lote", "Procesados", "Raíz"
+        )
+        bot._ready.assert_called_once_with("Procesados", timeout=45000)
+        bot._row.assert_not_called()
+
+    def test_espera_estructura_hasta_que_ambos_grupos_sean_visibles(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot.entrar = Mock()
+        bot._grupo_actual = Mock(return_value="00 Ejemplo(1)")
+        bot.subir_nivel = Mock()
+        bot.listar = Mock(side_effect=[
+            [Item("00 Procesos", "grupo")],
+            [Item("00 Procesos", "grupo"),
+             Item("01 Mapas y Catálogos", "grupo")],
+        ])
+        bot.validar_copia_completa(
+            "https://aris.example/lote", "Procesados", "00 Ejemplo(1)"
+        )
+        self.assertEqual(bot.listar.call_count, 2)
+        bot.entrar.assert_called_once_with(
+            "https://aris.example/lote", "Procesados", "00 Ejemplo(1)"
+        )
+        bot.subir_nivel.assert_called_once_with("Procesados")
 
     def test_copia_rechazada_no_reintenta_pegado(self):
         bot = Aris(Path("."), Mock())
