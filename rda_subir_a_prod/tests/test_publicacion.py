@@ -91,6 +91,15 @@ class TestDialogoFinal(unittest.TestCase):
             bot._resultado(baseline=0)
         aceptar.click.assert_not_called()
 
+    def test_mensaje_final_desconocido_no_hace_click(self):
+        bot, _, aceptar, _ = self.crear_publicador(
+            "BBVA - Publicación de modelado de proceso\\n"
+            "Resultado especial sin clasificar\\nAceptar"
+        )
+        with self.assertRaisesRegex(NoConfirmado, "no se reconoció"):
+            bot._resultado(baseline=0)
+        aceptar.click.assert_not_called()
+
     def test_historial_anterior_no_sustituye_el_aviso_final(self):
         aris = MagicMock()
         bot = Publicador(aris, Mock())
