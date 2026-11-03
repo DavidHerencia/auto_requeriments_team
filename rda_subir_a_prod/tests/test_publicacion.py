@@ -1,5 +1,6 @@
 """Pruebas locales del flujo 2. No abren ARIS ni publican modelos."""
 import unittest
+from itertools import count
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -114,10 +115,17 @@ class TestDialogoFinal(unittest.TestCase):
         aris.page.locator.side_effect = lambda selector: (
             dialogs if selector == 'div[role="dialog"]:visible' else rows
         )
-        with patch("publicacion.time.monotonic", side_effect=[0, 0, 1, 601]):
-            with self.assertRaises(NoConfirmado):
+        # Reloj virtual sin lista finita: el número de consultas a
+        # monotonic() puede cambiar sin romper la prueba con StopIteration.
+        ticks = count(start=0, step=100)
+        with patch("publicacion.time.monotonic", side_effect=lambda: next(ticks)):
+            with self.assertRaisesRegex(NoConfirmado, "no mostró un resultado final"):
                 bot._resultado(baseline=1)
-        aris.page.wait_for_timeout.assert_called_once()
+
+        # El historial, incluso con texto de éxito, no confirma el proceso
+        # actual ni autoriza pulsar Aceptar. Solo se observó y se agotó el plazo.
+        self.assertGreater(aris.page.wait_for_timeout.call_count, 0)
+        aris.page.wait_for_timeout.assert_any_call(500)
 
 
 if __name__ == "__main__":
