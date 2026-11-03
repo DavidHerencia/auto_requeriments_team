@@ -80,13 +80,28 @@ class Publicador:
         nodo = self._esperar_nodo(tree_id, name, level)
         state = nodo.get_attribute("aria-expanded")
         if state == "true":
-            self.log(f"[PROD][ARBOL] Ya expandido: {name}")
+            self.log(
+                f"[PROD][ARBOL] {tree_id}: {name!r} ya desplegado "
+                "(no se vuelve a pulsar el triángulo)"
+            )
             return
         if state != "false":
-            raise ArisError(f"No se puede expandir {name!r}; aria-expanded={state!r}")
-        toggle = nodo.locator(".cellTreeItemImage").first
+            raise ArisError(
+                f"{tree_id}: no se puede desplegar {name!r}; "
+                f"aria-expanded={state!r}"
+            )
+        # En GWT el triángulo es un IMG bajo .cellTreeItemImage.
+        # El nombre (.cellTreeItemValue) SOLO selecciona: no abre el árbol.
+        toggle = nodo.locator(".cellTreeItemImage img").first
         if toggle.count() != 1:
-            raise ArisError(f"El nodo {name!r} no tiene control de expansión")
+            raise ArisError(
+                f"{tree_id}: no se encontró el triángulo para {name!r}; "
+                "no se hará clic sobre el nombre"
+            )
+        self.log(
+            f"[PROD][ARBOL] {tree_id}: pulsando triángulo de {name!r} "
+            f"(nivel {level}) una vez"
+        )
         toggle.click()
         try:
             self.page.wait_for_function(
@@ -105,11 +120,23 @@ class Publicador:
             )
         except PWTimeout as exc:
             raise ArisError(f"No se expandió {name!r} en {tree_id}") from exc
-        self.log(f"[PROD][ARBOL] Expandido: {name}")
+        self.log(
+            f"[PROD][ARBOL] {tree_id}: {name!r} desplegado y confirmado "
+            "(aria-expanded=true)"
+        )
 
     def _seleccionar(self, tree_id: str, name: str, level: int):
+        self.log(
+            f"[PROD][ARBOL] {tree_id}: esperando grupo {name!r} "
+            f"(nivel {level})"
+        )
         node = self._esperar_nodo(tree_id, name, level)
         label = node.locator(".cellTreeItemValue > span[title]").first
+        if label.count() != 1 or label.get_attribute("title") != name:
+            raise ArisError(
+                f"{tree_id}: etiqueta del grupo {name!r} no coincide"
+            )
+        # Clic en el texto para seleccionar, NUNCA en el triángulo.
         label.click()
         try:
             self.page.wait_for_function(
@@ -128,7 +155,10 @@ class Publicador:
             )
         except PWTimeout as exc:
             raise ArisError(f"No quedó seleccionado {name!r} en {tree_id}") from exc
-        self.log(f"[PROD][ARBOL] Seleccionado {tree_id}: {name}")
+        self.log(
+            f"[PROD][ARBOL] {tree_id}: grupo seleccionado "
+            f"y confirmado (aria-selected=true): {name!r}"
+        )
 
     def _boton(self, etiqueta: str):
         dialog = self._dialogo()
@@ -143,8 +173,39 @@ class Publicador:
             raise ArisError(f"El botón {etiqueta!r} está deshabilitado")
         return boton
 
-    def _next(self):
+    def _next(self, etapa: str):
+        """Esperar que ARIS habilite Siguiente DESPUÉS de seleccionar el grupo.
+
+        No se hace clic en Siguiente mientras exista error de selección.
+        Se consulta el estado del botón de forma reactiva, sin repetir
+        ninguno de los clics previos sobre el árbol.
+        """
+        self.log(
+            f"[PROD][ASISTENTE] {etapa}: esperando habilitación de Siguiente"
+        )
+        try:
+            self.page.wait_for_function(
+                """() => {
+                    const d = Array.from(
+                        document.querySelectorAll('[data-testid="SCRIPT_DIALOG"]')
+                    ).find(el => el.getClientRects().length > 0);
+                    const a = d?.querySelector('[data-testid="BTN_NEXT"]');
+                    return !!a && a.getClientRects().length > 0
+                        && a.getAttribute('aria-disabled') !== 'true'
+                        && !a.hasAttribute('disabled')
+                        && !a.classList.contains('disabled');
+                }""",
+                timeout=60000,
+            )
+        except PWTimeout as exc:
+            raise NoConfirmado(
+                f"{etapa}: ARIS no habilitó Siguiente tras seleccionar "
+                "el grupo. Comprobar el mensaje del asistente; "
+                "no se volverá a seleccionar ni a lanzar el informe."
+            ) from exc
+        self.log(f"[PROD][ASISTENTE] {etapa}: Siguiente habilitado")
         self._boton("Siguiente").click()
+        self.log(f"[PROD][ASISTENTE] {etapa}: Siguiente pulsado una vez")
 
     def _seleccionar_informe(self):
         panel = self.page.locator(REPORT_PANEL)
@@ -199,16 +260,19 @@ class Publicador:
 
     def _escenario(self, detalle: str):
         self._esperar_paso("TREE_P0")
+        # El grupo - Detalle no aparece hasta pulsar el TRIÁNGULO de
+        # "00 Procesos"; el clic en su nombre no despliega el árbol GWT.
+        self._expandir("TREE_P0", PROCESOS, 1)
         self._seleccionar("TREE_P0", detalle, 2)
-        self._next()
-        self.log("[PROD][ASISTENTE] Escenario - Detalle confirmado")
+        self._next("Escenario / 00 Procesos")
+        self.log(f"[PROD][ASISTENTE] Escenario confirmado: {detalle!r}")
 
     def _mapa(self, nombre: str):
         self._esperar_paso("TREE_P1")
         self._expandir("TREE_P1", MAPAS, 1)
         self._seleccionar("TREE_P1", nombre, 2)
-        self._next()
-        self.log("[PROD][ASISTENTE] Mapa y Catálogos confirmado")
+        self._next("Mapa / 01 Mapas y Catálogos")
+        self.log(f"[PROD][ASISTENTE] Mapa confirmado: {nombre!r}")
 
     def _exportar(self, detalle: str, base: str):
         d = self._dialogo()
@@ -241,7 +305,7 @@ class Publicador:
         for nivel, carpeta in enumerate(DESTINO_WIZARD, start=1):
             self._expandir("TREE_P2", carpeta, nivel)
         self._seleccionar("TREE_P2", codigo, 4)
-        self._next()
+        self._next("Destino de importación")
         summary = self._dialogo()
         path = summary.locator('[data-testid="TEXT_PATH_CONFIRM"]')
         if path.count() != 1:
