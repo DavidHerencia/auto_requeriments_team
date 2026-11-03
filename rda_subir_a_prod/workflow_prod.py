@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -145,15 +146,68 @@ def _verificar_destino(aris: Aris, destino_url: str,
             "El destino (link 1) debe estar inicialmente vacío para este lote. "
             f"Hay {len(encontrados)} elementos. No se sobrescribirá nada."
         )
-    # El nombre 'atencion_r' no basta: puede repetirse en otro repositorio.
-    # Confirmar su padre y abuelo usando solo la navegación nativa.
+    # El nombre 'atencion_r' no basta: podría existir otro homónimo.
+    # Verificamos la ruta usando el contenido del repositorio, no solo
+    # #headerSearchBox, que en ARIS puede mostrar el padre del grupo
+    # SELECCIONADO mientras la tabla muestra sus hijos.
+    aris.log(
+        f"[PROD][DESTINO] Carpeta vacía confirmada: {nombre!r}; "
+        "validando cadena 04 PERU / 90 OTROS MODELOS / atencion_r"
+    )
     try:
+        # Primer salto validado en la sesión real: atencion_r -> 90 OTROS MODELOS.
         aris.subir_nivel(DESTINO_WIZARD[1])
-        aris.subir_nivel(DESTINO_WIZARD[0])
+        aris.esperar_grupos(
+            aris.page.url, DESTINO_WIZARD[1], {DESTINO_WIZARD[2]}
+        )
+        aris.log(
+            "[PROD][DESTINO] Padre 90 OTROS MODELOS confirmado: "
+            "contiene atencion_r"
+        )
+
+        # El siguiente clic puede mostrar Buscar en: PERU_PRODUCCION con
+        # 04 PERU seleccionado (captura real 03/11/2026). En ese estado
+        # el centro muestra los 8 HIJOS de 04 PERU, incluido 90 OTROS MODELOS.
+        # Exigir _ready('04 PERU') genera un falso error y 60 s de espera.
+        aris.log("[PROD][DESTINO] Subiendo desde 90 OTROS MODELOS")
+        aris._toolbar("LEVEL_UP").click()  # navegación, NUNCA una escritura
+        plazo = time.monotonic() + 90
+        ultimo_estado = None
+        siguiente_log = 0
+        while time.monotonic() < plazo:
+            cabecera = aris._grupo_actual()
+            grupos = {item.name for item in aris.listar() if item.kind == "grupo"}
+            # '90 OTROS MODELOS' no es hijo de sí mismo. Su aparición
+            # confirma que la tabla ya está mostrando el nivel padre.
+            if DESTINO_WIZARD[1] in grupos:
+                aris.log(
+                    "[PROD][DESTINO OK] Jerarquía confirmada por los hijos: "
+                    f"{DESTINO_WIZARD[0]} contiene {DESTINO_WIZARD[1]}; "
+                    f"cabecera ARIS={cabecera!r}"
+                )
+                break
+            estado = (cabecera, tuple(sorted(grupos)))
+            if estado != ultimo_estado or time.monotonic() >= siguiente_log:
+                aris.log(
+                    "[PROD][DESTINO][ESPERA] Navegando hacia 04 PERU; "
+                    f"cabecera={cabecera!r}; grupos visibles={sorted(grupos)!r}"
+                )
+                ultimo_estado = estado
+                siguiente_log = time.monotonic() + 6
+            aris.page.wait_for_timeout(350)
+        else:
+            raise ArisError(
+                "No se pudo confirmar que 04 PERU contiene 90 OTROS MODELOS. "
+                f"Contexto: {aris.diagnostico()}"
+            )
     finally:
+        # Volver al enlace exacto del usuario, sin dejar la prueba en un padre.
+        # No se crea ni publica nada en este procedimiento.
+        aris.log("[PROD][DESTINO] Regresando al Link 1 (atencion_r)")
         aris.abrir(destino_url, expected=nombre)
+        aris.log("[PROD][DESTINO] Link 1 restaurado y verificado")
     LOG.info(
-        "Destino validado en la jerarquía %s",
+        "Destino validado por niveles consecutivos: %s",
         " / ".join(DESTINO_WIZARD)
     )
 
