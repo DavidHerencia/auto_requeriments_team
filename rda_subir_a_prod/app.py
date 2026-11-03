@@ -69,10 +69,31 @@ class App:
         self.execute_btn = ttk.Button(actions, text="Ejecutar flujo 1", command=self._execute)
         self.execute_btn.pack(side="left", padx=(0, 10))
         ttk.Button(actions, text="Flujo 2 · Próximamente", state="disabled").pack(side="left")
-        ttk.Label(p, text="Registro de ejecución").pack(anchor="w", pady=(12, 5))
+        log_actions = ttk.Frame(p)
+        log_actions.pack(fill="x", pady=(12, 5))
+        ttk.Label(log_actions, text="Registro de ejecución").pack(side="left")
+        ttk.Button(log_actions, text="Abrir logs", command=self._open_logs).pack(
+            side="right", padx=(8, 0)
+        )
+        ttk.Button(log_actions, text="Abrir reportes JSON", command=self._open_results).pack(
+            side="right"
+        )
         self.console = scrolledtext.ScrolledText(p, height=18, state="disabled", font=("Consolas", 10))
         self.console.pack(fill="both", expand=True)
         ttk.Label(p, text=f"Perfil y reportes: {BASE}", wraplength=800).pack(anchor="w", pady=(8, 0))
+
+    def _open_folder(self, folder: Path):
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(folder))  # Windows corporativo; no necesita admin
+        except (AttributeError, OSError) as exc:
+            messagebox.showerror("No se pudo abrir la carpeta", f"{folder}\n{exc}")
+
+    def _open_logs(self):
+        self._open_folder(LOGS)
+
+    def _open_results(self):
+        self._open_folder(RESULTS)
 
     def _save(self):
         BASE.mkdir(parents=True, exist_ok=True)
@@ -163,7 +184,13 @@ class App:
         self.console.insert("end", f"\nREPORTE: {filename}\n")
         try:
             data = json.loads(Path(filename).read_text(encoding="utf-8"))
-            self.console.insert("end", f"ESTADO: {data['estado']}\nRESUMEN: {data.get('resumen', {})}\n")
+            self.console.insert(
+                "end",
+                f"ESTADO: {data['estado']}\n"
+                f"COPIAS: {data.get('copias', {})}\n"
+                f"RESUMEN: {data.get('resumen', {})}\n"
+                f"ERRORES: {data.get('errores_globales', [])}\n"
+            )
         except Exception as exc:
             self.console.insert("end", f"No fue posible leer reporte: {exc}\n")
         self.console.see("end")
