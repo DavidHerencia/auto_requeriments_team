@@ -325,11 +325,11 @@ class Publicador:
             )
         resumen_valor = resumen.input_value()
         escenario_match = re.search(
-            r"Grupos de escenario:\\s*\\[G\\]\\s*([^\\r\\n]+)",
+            r"Grupos de escenario:\s*\[G\]\s*([^\r\n]+)",
             resumen_valor, flags=re.I
         )
         catalogo_match = re.search(
-            r"Grupos y Modelos de Cat[aá]logo:\\s*\\[G\\]\\s*([^\\r\\n]+)",
+            r"Grupos y Modelos de Cat[aá]logo:\s*\[G\]\s*([^\r\n]+)",
             resumen_valor, flags=re.I
         )
         seleccionado_detalle = (
