@@ -215,11 +215,23 @@ class Publicador:
         text = d.inner_text()
         if "Resumen de datos a exportar" not in text:
             raise ArisError("El resumen de exportación no está disponible")
-        # El nombre en resumen debe contener ambos grupos seleccionados.
-        if detalle not in text or base not in text:
+        # ARIS presenta los grupos seleccionados en dos TEXTAREA.
+        # No aparecen en inner_text(): hay que leer el VALUE del control.
+        scen = d.locator('[data-testid="TEXTO_RESUMEN_P2"]')
+        maps = d.locator('[data-testid="TEXTO_PROC_MOD_P2"]')
+        if scen.count() != 1 or maps.count() != 1:
+            raise ArisError("No se encontraron los resúmenes de escenario y mapa")
+        scen_value = scen.input_value()
+        maps_value = maps.input_value()
+        if detalle not in scen_value or base not in maps_value:
             raise ArisError(
-                "El resumen de exportación no identifica los dos grupos seleccionados"
+                "El resumen de exportación no coincide con el proceso: "
+                f"escenario={scen_value[:200]!r}, mapa={maps_value[:200]!r}"
             )
+        self.log(
+            f"[PROD][RESUMEN EXPORT] Escenario={scen_value[:160]!r} "
+            f"Mapa={maps_value[:160]!r}"
+        )
         self.log("[PROD][ASISTENTE] Resumen de exportación inspeccionado")
         self._boton("Finalizar").click()  # una sola exportación
         self.log("[PROD][ESCRITURA] Exportación confirmada una sola vez")
