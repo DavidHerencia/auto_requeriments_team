@@ -309,9 +309,11 @@ class Publicador:
                 content = d.inner_text().strip()
                 # No aceptar por accidente el asistente de selección ni la
                 # ventana de progreso (que puede tener botón Cancelar).
+                # Un aviso de "completado con errores" es fallo, aunque
+                # también contenga la palabra "completado".
                 status = (
-                    "ok" if exitos.search(content)
-                    else "fallo_aris" if fallos.search(content)
+                    "fallo_aris" if fallos.search(content)
+                    else "ok" if exitos.search(content)
                     else None
                 )
                 if status:
