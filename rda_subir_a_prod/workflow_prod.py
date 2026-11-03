@@ -204,7 +204,9 @@ def _verificar_destino(aris: Aris, destino_url: str,
         # Volver al enlace exacto del usuario, sin dejar la prueba en un padre.
         # No se crea ni publica nada en este procedimiento.
         aris.log("[PROD][DESTINO] Regresando al Link 1 (atencion_r)")
-        aris.abrir(destino_url, expected=nombre)
+        # Es una validación de solo lectura: no hay portapapeles por preservar.
+        # Una navegación completa evita otro cambio de hash que ARIS ignore.
+        aris.abrir(destino_url, expected=nombre, reload=True)
         aris.log("[PROD][DESTINO] Link 1 restaurado y verificado")
     LOG.info(
         "Destino validado por niveles consecutivos: %s",
