@@ -221,7 +221,7 @@ class TestReanudacionDestinos(unittest.TestCase):
 
         aris = MagicMock()
         aris.listar.return_value = [Item("7.3.3.12_P01", "grupo")]
-        with self.assertRaisesRegex(ArisError, "activa expresamente"):
+        with self.assertRaisesRegex(ArisError, "Ya existen carpetas N5 del lote"):
             _verificar_destino(
                 aris, "https://aris.example/destino",
                 "atencion_r", "https://aris.example/origen",
@@ -250,12 +250,55 @@ class TestReanudacionDestinos(unittest.TestCase):
             )
         aris.crear_grupo.assert_not_called()
 
-    def test_reanudacion_rechaza_grupos_ajenos(self):
+    def test_carpetas_de_otras_solicitudes_no_bloquean_lote(self):
         from workflow_prod import _verificar_destino
 
         aris = MagicMock()
-        aris.listar.return_value = [Item("Otro N5", "grupo")]
-        with self.assertRaisesRegex(ArisError, "distintos"):
+        aris.page.url = "https://aris.example/#repositorio/04peru"
+        aris._grupo_actual.return_value = "PERU_PRODUCCION"
+        aris.listar.side_effect = [
+            [Item("1.1.1_P01", "grupo"), Item("otro modelo", "modelo")],
+            [Item("90 OTROS MODELOS", "grupo")],
+        ]
+        result = _verificar_destino(
+            aris, "https://aris.example/destino",
+            "atencion_r", "https://aris.example/origen",
+            codigos_esperados={"7.3.3.12_P01", "7.3.3.13_P01"},
+            continuar_vacios=False,
+        )
+        self.assertEqual(result, set())
+        aris.entrar.assert_not_called()
+        aris.crear_grupo.assert_not_called()
+
+    def test_mixto_grupo_ajeno_y_n5_vacio_reutiliza_solo_n5(self):
+        from workflow_prod import _verificar_destino
+
+        aris = MagicMock()
+        aris.page.url = "https://aris.example/#repositorio/04peru"
+        aris._grupo_actual.return_value = "PERU_PRODUCCION"
+        aris.listar.side_effect = [
+            [Item("Otro N5", "grupo"),
+             Item("7.3.3.12_P01", "grupo")],
+            [Item("90 OTROS MODELOS", "grupo")],
+            [],
+        ]
+        result = _verificar_destino(
+            aris, "https://aris.example/destino",
+            "atencion_r", "https://aris.example/origen",
+            codigos_esperados={"7.3.3.12_P01", "7.3.3.13_P01"},
+            continuar_vacios=True,
+        )
+        self.assertEqual(result, {"7.3.3.12_P01"})
+        aris.entrar.assert_called_once_with(
+            "https://aris.example/destino", "atencion_r", "7.3.3.12_P01"
+        )
+
+    def test_colision_con_un_modelo_del_mismo_codigo_detiene(self):
+        from workflow_prod import _verificar_destino
+
+        aris = MagicMock()
+        aris.listar.return_value = [Item("7.3.3.12_P01", "modelo")]
+        with self.assertRaisesRegex(ArisError, "no son grupos"):
             _verificar_destino(
                 aris, "https://aris.example/destino",
                 "atencion_r", "https://aris.example/origen",
@@ -263,6 +306,50 @@ class TestReanudacionDestinos(unittest.TestCase):
                 continuar_vacios=True,
             )
         aris.crear_grupo.assert_not_called()
+
+
+class TestResumenExportacion(unittest.TestCase):
+    def setUp(self):
+        self.aris = MagicMock()
+        self.bot = Publicador(self.aris, Mock())
+        self.dialog = MagicMock()
+        self.dialog.inner_text.return_value = "3. Resumen de datos a exportar"
+        self.resumen = MagicMock()
+        self.resumen.count.return_value = 1
+        self.dialog.locator.return_value = self.resumen
+        self.bot._dialogo = Mock(return_value=self.dialog)
+        self.finalizar = MagicMock()
+        self.bot._boton = Mock(return_value=self.finalizar)
+        self.bot._esperar_paso = Mock()
+        self.detalle = "7.3.3.12_P01 Autenticación de clientes - Detalle"
+        self.base = "7.3.3.12_P01 Autenticación de clientes"
+
+    def test_ambos_grupos_en_un_solo_campo_y_segundo_vacio(self):
+        self.resumen.input_value.return_value = (
+            "Grupos de escenario:\\n"
+            "[G] 7.3.3.12_P01 Autenticación de clientes - Detalle\\n\\n"
+            "Grupos y Modelos de Catálogo:\\n"
+            "[G] 7.3.3.12_P01 Autenticación de clientes\\n"
+        )
+        self.bot._exportar(self.detalle, self.base)
+        self.dialog.locator.assert_called_once_with(
+            '[data-testid="TEXTO_RESUMEN_P2"]'
+        )
+        self.finalizar.click.assert_called_once_with()
+        self.bot._esperar_paso.assert_called_once_with(
+            "TREE_P2", timeout=360000
+        )
+
+    def test_resumen_equivocado_no_pulsa_finalizar(self):
+        self.resumen.input_value.return_value = (
+            "Grupos de escenario:\\n"
+            "[G] 7.3.3.12_P01 Autenticación de clientes - Detalle\\n\\n"
+            "Grupos y Modelos de Catálogo:\\n"
+            "[G] 7.3.3.13_P01 Otro mapa\\n"
+        )
+        with self.assertRaisesRegex(ArisError, "No se pulsó Finalizar"):
+            self.bot._exportar(self.detalle, self.base)
+        self.finalizar.click.assert_not_called()
 
 
 class TestDialogoFinal(unittest.TestCase):
