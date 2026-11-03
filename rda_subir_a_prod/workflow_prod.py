@@ -144,27 +144,43 @@ def _verificar_destino(aris: Aris, destino_url: str,
     aris.abrir(destino_url, expected=nombre)
     encontrados = aris.listar()
     codigos_esperados = codigos_esperados or set()
-    existentes = {item.name for item in encontrados if item.kind == "grupo"}
-    if encontrados:
-        if not continuar_vacios:
-            raise ArisError(
-                "El Link 1 contiene carpetas de una ejecución anterior. "
-                "No se recrearán ni sobrescribirán automáticamente. "
-                "Para continuar con N5 existentes vacíos, activa expresamente "
-                "'Usar N5 vacíos existentes' tras comprobar el árbol de ARIS."
-            )
-        no_validos = [
-            (item.name, item.kind) for item in encontrados
-            if item.kind != "grupo" or item.name not in codigos_esperados
-        ]
-        if no_validos:
-            raise ArisError(
-                "El destino tiene elementos distintos de los N5 esperados: "
-                f"{no_validos!r}. No se sobrescribirá contenido."
-            )
+    # atencion_r puede albergar otras solicitudes. Nunca tocar las carpetas
+    # ajenas, nunca crear otro grupo con un nombre ya presente.
+    colisiones = [
+        (item.name, item.kind) for item in encontrados
+        if item.name in codigos_esperados and item.kind != "grupo"
+    ]
+    if colisiones:
+        raise ArisError(
+            "Hay objetos/modelos en el destino con un nombre N5 solicitado "
+            f"(no son grupos): {colisiones!r}. No se creará otro objeto homónimo."
+        )
+    existentes = {
+        item.name for item in encontrados
+        if item.kind == "grupo" and item.name in codigos_esperados
+    }
+    ajenos = [
+        (item.name, item.kind) for item in encontrados
+        if item.name not in codigos_esperados
+    ]
+    aris.log(
+        f"[PROD][DESTINO][INVENTARIO] total={len(encontrados)}; "
+        f"N5 del lote existentes={sorted(existentes)!r}; "
+        f"otros elementos conservados={len(ajenos)}; "
+        f"N5 a crear={sorted(codigos_esperados - existentes)!r}"
+    )
+    if existentes and not continuar_vacios:
+        raise ArisError(
+            "Ya existen carpetas N5 del lote actual. "
+            f"Coincidencias: {sorted(existentes)!r}. "
+            "Marca 'usar N5 existentes SOLO si están vacíos' para "
+            "verificarlas y reutilizarlas. Las carpetas ajenas al lote "
+            "no bloquean la ejecución y no se modifican."
+        )
+    if existentes:
         aris.log(
-            f"[PROD][REANUDACION] Detectados {len(existentes)} N5 "
-            f"ya creados: {sorted(existentes)!r}; comprobando que estén vacíos"
+            f"[PROD][REANUDACION] Validando {len(existentes)} N5 "
+            "del lote que ya existen; no se volverán a crear"
         )
     # El nombre 'atencion_r' no basta: podría existir otro homónimo.
     # Verificamos la ruta usando el contenido del repositorio, no solo
@@ -172,7 +188,8 @@ def _verificar_destino(aris: Aris, destino_url: str,
     # SELECCIONADO mientras la tabla muestra sus hijos.
     aris.log(
         f"[PROD][DESTINO] Contenido inicial de {nombre!r}: "
-        f"{len(existentes)} N5 existentes autorizados; "
+        f"{len(existentes)} N5 del lote preexistentes; "
+        f"{len(ajenos)} elementos ajenos conservados; "
         "validando cadena 04 PERU / 90 OTROS MODELOS / atencion_r"
     )
     try:
