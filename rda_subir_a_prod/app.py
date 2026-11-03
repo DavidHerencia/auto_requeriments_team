@@ -166,6 +166,8 @@ class App:
                     self.console.insert("end", val + "\n")
                     self.console.see("end")
                     self.console.configure(state="disabled")
+                    if val.startswith(("[MAPEO]", "[COPIAS]", "[COPIA]", "[RENOMBRADO]")):
+                        self.state.set(val[:160])
                 else:
                     self.busy = False
                     self.validate_btn.configure(state="normal")
@@ -184,6 +186,14 @@ class App:
         self.console.insert("end", f"\nREPORTE: {filename}\n")
         try:
             data = json.loads(Path(filename).read_text(encoding="utf-8"))
+            if data.get("estado") == "interrumpido":
+                self.state.set("Interrumpido: puede haber cambios parciales. Ver logs y JSON.")
+            elif data.get("estado") == "completado_con_errores":
+                self.state.set("Completado con incidencias. Ver logs y JSON.")
+            elif data.get("estado") == "completado":
+                self.state.set("Flujo 1 completado y registrado.")
+            elif data.get("estado") == "simulacion_correcta":
+                self.state.set("Validación finalizada sin cambios.")
             self.console.insert(
                 "end",
                 f"ESTADO: {data['estado']}\n"
