@@ -148,7 +148,7 @@ def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
             # Crear copias ANTES de renombrar cualquier elemento.
             copias = [template_actual]
             for _ in range(len(records) - 1):
-                nueva = aris.copiar_plantilla(lote_url, lote)
+                nueva = aris.copiar_plantilla(lote_url, lote, template)
                 copias.append(nueva)
             if len(set(copias)) != len(records):
                 raise NoConfirmado("Copias duplicadas detectadas: detener para inspección")
