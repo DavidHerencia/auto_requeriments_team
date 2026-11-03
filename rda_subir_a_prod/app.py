@@ -44,6 +44,9 @@ class App:
         self.link2 = tk.StringVar()
         self.link3 = tk.StringVar()
         self.simular = tk.BooleanVar(value=True)
+        # Opt-in, nunca persistido: una ejecución anterior puede haber
+        # creado los N5 pero no haber completado la publicación.
+        self.continuar_n5_vacios = tk.BooleanVar(value=False)
         self.state = tk.StringVar(value="Sin sesión validada")
         self._draw()
         self._load()
@@ -89,6 +92,11 @@ class App:
             command=lambda: self._start(self.simular.get(), flujo=2)
         )
         self.execute_prod_btn.pack(side="left")
+        ttk.Checkbutton(
+            actions2,
+            text="Flujo 2: usar N5 existentes SOLO si están vacíos",
+            variable=self.continuar_n5_vacios,
+        ).pack(side="left", padx=(12, 0))
         log_actions = ttk.Frame(p)
         log_actions.pack(fill="x", pady=(12, 5))
         ttk.Label(log_actions, text="Registro de ejecución").pack(side="left")
@@ -152,14 +160,19 @@ class App:
             if flujo == 2:
                 texto = (
                     "FLUJO 2: PASO A PRODUCCIÓN\n\n"
-                    "El bot CREARÁ grupos N5 en el Link 1 y ejecutará "
-                    "el informe de publicación con los modelos del Link 2.\n\n"
+                    "El bot CREARÁ los grupos N5 que falten en el Link 1 "
+                    "y ejecutará el informe de publicación con los modelos "
+                    "del Link 2.\n\n"
                     "En la resolución de conflictos, ARIS indica que "
                     "MODELOS, OBJETOS y CONEXIONES del ORIGEN "
                     "SOBREESCRIBEN los del DESTINO.\n\n"
-                    "Se valida que la carpeta esté vacía y que la ruta del "
-                    "asistente sea 04 PERU / 90 OTROS MODELOS / atencion_r / N5.\n"
-                    "Sin reintentos automáticos. ¿Confirmas la ejecución REAL?"
+                    "Sin la opción de continuación, el Link 1 debe estar vacío. "
+                    "Con la opción, solo se reutilizarán N5 con código esperado "
+                    "y contenido totalmente vacío; nunca se recrearán.\n"
+                    "Ruta exigida: 04 PERU / 90 OTROS MODELOS / atencion_r / N5.\n"
+                    "Si ya se lanzó un informe previamente, revisa primero "
+                    "el resultado en ARIS. Sin reintentos automáticos.\n\n"
+                    "¿Confirmas la ejecución REAL?"
                 )
             else:
                 texto = (
@@ -179,13 +192,16 @@ class App:
             self.validate_prod_btn, self.execute_prod_btn
         ):
             b.configure(state="disabled")
+        continuar = bool(self.continuar_n5_vacios.get()) if flujo == 2 else False
         t = threading.Thread(
-            target=self._worker, args=(flujo, url1, url2, simular),
+            target=self._worker,
+            args=(flujo, url1, url2, simular, continuar),
             daemon=True
         )
         t.start()
 
-    def _worker(self, flujo: int, url1: str, url2: str | None, simular: bool):
+    def _worker(self, flujo: int, url1: str, url2: str | None,
+                simular: bool, continuar: bool = False):
         path, handler = configurar_logs(self.events)
         self._log(f"[FLUJO {flujo}] Log guardado en {path}")
         try:
@@ -196,7 +212,8 @@ class App:
             else:
                 result = ejecutar_flujo_2(
                     url1, url2, PROFILE, RESULTS,
-                    self._log, simular=simular
+                    self._log, simular=simular,
+                    continuar_n5_vacios=continuar,
                 )
             self.events.put(("done", str(result)))
         except Exception as exc:
