@@ -151,3 +151,13 @@ python app.py
 ```
 
 Primero probar **Validar flujo 2 (sin cambios)**. El código y los tests offline no equivalen a una validación en ARIS real; no se ha ejecutado el flujo de publicación dentro de la sesión corporativa desde aquí. No reiniciar el lote automáticamente si quedó una publicación indeterminada.
+
+## Corrección de validación del destino en producción (03/11/2026)
+
+**Síntoma observado:** el preflight de los dos procesos terminaba correctamente, el bot registraba `Subido al nivel: 90 OTROS MODELOS` y luego quedaba esperando una cabecera literal `Buscar en: 04 PERU`. Sin embargo, ARIS mostraba `Buscar en: PERU_PRODUCCION` con `04 PERU` seleccionado y la tabla central de hijos (`90 OTROS MODELOS` entre ellos). Era un **falso error de contexto**, no prueba de que fallara SSO.
+
+**Cambio:** la comprobación ahora verifica la cadena por el contenido real después de cada subida: dentro de `90 OTROS MODELOS` debe existir `atencion_r`, y tras subir otro nivel deben aparecer los hijos de `04 PERU`, incluido `90 OTROS MODELOS`. El encabezado desfasado se registra, pero por sí solo no bloquea la prueba. Se observa la tabla reactivamente (hasta 90 segundos si no aparece), sin repetir clics. La validación termina abriendo el Link 1 con una navegación completa, puesto que no hay portapapeles pendiente.
+
+Nuevos logs: `[PROD][DESTINO]`, `[PROD][DESTINO OK]` y `[PROD][DESTINO][ESPERA]`. La interfaz ahora distingue **validación interrumpida sin cambios** de **ejecución real con posibles cambios parciales**. Se añadieron pruebas sin ARIS para el encabezado `PERU_PRODUCCION` y el rechazo de una jerarquía incorrecta.
+
+Esto no modifica el informe de publicación ni los pasos de creación. **Probar primero `Validar flujo 2 (sin cambios)`** y revisar que aparezca `[PROD][DESTINO OK]` seguido de `[PROD][SIMULACION]`, antes de permitir publicación real.
