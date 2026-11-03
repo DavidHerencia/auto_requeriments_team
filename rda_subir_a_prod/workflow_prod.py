@@ -175,8 +175,23 @@ def _verificar_destino(aris: Aris, destino_url: str,
         ultimo_estado = None
         siguiente_log = 0
         while time.monotonic() < plazo:
-            cabecera = aris._grupo_actual()
-            grupos = {item.name for item in aris.listar() if item.kind == "grupo"}
+            try:
+                cabecera = aris._grupo_actual()
+                grupos = {
+                    item.name for item in aris.listar() if item.kind == "grupo"
+                }
+            except ArisError as exc:
+                # Durante el repintado de GWT el encabezado o la tabla pueden
+                # desaparecer brevemente. Es lectura: se permite observar
+                # de nuevo, NUNCA repetir el clic de navegación.
+                if time.monotonic() >= siguiente_log:
+                    aris.log(
+                        "[PROD][DESTINO][ESPERA] ARIS está actualizando "
+                        f"la vista: {exc}"
+                    )
+                    siguiente_log = time.monotonic() + 6
+                aris.page.wait_for_timeout(350)
+                continue
             # '90 OTROS MODELOS' no es hijo de sí mismo. Su aparición
             # confirma que la tabla ya está mostrando el nivel padre.
             if DESTINO_WIZARD[1] in grupos:
