@@ -94,3 +94,16 @@ Estas pruebas unitarias no sustituyen la comprobación de Chrome ni de los diál
 - Pruebas unitarias añadidas para verificar selección explícita del destino, detección de grupo/modelo y ausencia de reintentos tras un rechazo. Estas pruebas **no han sido ejecutadas contra ARIS corporativo**.
 
 Antes de una nueva ejecución real, inspecciona el árbol del lote interrumpido y elimina o recupera manualmente cualquier duplicado de prueba que no necesites. Ejecuta primero la simulación en una estructura **nueva** y luego una ejecución controlada con una sola carpeta `- Detalle` y su plantilla. El robot no reanuda automáticamente operaciones parcialmente completadas.
+
+## Ajuste de navegación tras la copia (03/11/2026)
+
+Se observó que, tras el primer pegado, ARIS quedaba en la carpeta raíz con **Procesados seleccionado**, mientras un cambio directo del hash no terminaba de abrir su contenido. Al hacer doble clic manual en el grupo, el flujo continuaba.
+
+- Se **mantiene** la selección explícita de **Procesados** desde la raíz como destino del pegado, porque evita copiar la plantilla dentro de sí misma.
+- Después del único pegado, el robot identifica el grupo que **realmente muestra el encabezado de ARIS**, sin confiar únicamente en la URL.
+- Si ARIS está en la raíz, abre **Procesados** mediante el mismo doble clic que ya usa `entrar()`. No intenta navegar cambiando `location.hash` en este punto.
+- Si ARIS ya está dentro de Procesados, no hace un segundo clic. Si el nombre o URL no corresponden al lote, se detiene; nunca repite el pegado.
+- Se comprueba que apareció **exactamente una** carpeta nueva en el destino, con nombre distinto al original. Los logs distinguen selección de origen, elección del destino, solicitud de pegado, regreso y confirmación de copia.
+- Nuevas pruebas de lógica cubren navegación manual equivalente, destino ya abierto, nombre inesperado y URL de otro lote. Estas pruebas no sustituyen una ejecución controlada en la sesión corporativa.
+
+**Siguiente prueba recomendada:** usar dos procesos `- Detalle` y una plantilla, en una carpeta limpia. Revisar en los logs la secuencia `Destino para pegar confirmado` → `Pegado solicitado` → `Volviendo a ... mediante clic` → `Destino confirmado` → `Plantilla copiada`. No reanudar automáticamente un lote interrumpido.
