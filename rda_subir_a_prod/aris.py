@@ -422,11 +422,14 @@ class Aris:
         if actual == destino:
             self._ready(destino, timeout=45000)
             if self.page.url != destino_url:
-                raise NoConfirmado(
-                    f"ARIS muestra {destino!r} pero la URL no coincide con "
-                    "la carpeta de destino. No se hará otra copia."
+                # ARIS puede regenerar la ruta de un grupo después de moverlo.
+                # El contexto visible y la navegación desde el padre son la prueba;
+                # la URL antigua por sí sola NO invalida una copia correcta.
+                self.log(
+                    f"[NAV][AVISO] Ruta regenerada para {destino!r}; "
+                    "se verificará el contenido, sin repetir el pegado"
                 )
-            self.log(f"Ya estamos en el destino de la copia: {destino}")
+            self.log(f"[NAV] Ya estamos dentro de {destino!r}")
             return
         if actual != nivel_padre:
             raise NoConfirmado(
@@ -450,11 +453,11 @@ class Aris:
                 "después del clic. No se hará otro pegado."
             ) from exc
         if self.page.url != destino_url:
-            raise NoConfirmado(
-                f"ARIS abrió {destino!r}, pero la URL es distinta "
-                "de la guardada para este lote. Detenido."
+            self.log(
+                f"[NAV][AVISO] ARIS abrió {destino!r} desde su padre, "
+                "pero la ruta cambió. Se verificará su contenido."
             )
-        self.log(f"Destino confirmado: {destino}")
+        self.log(f"[NAV] Destino confirmado en la interfaz: {destino}")
 
     def copiar_plantilla(self, parent_url: str, parent_name: str,
                          plantilla: str, grandparent_url: str,
@@ -482,8 +485,9 @@ class Aris:
             raise NoConfirmado("ARIS mostraba una alerta de destino inválido; no se pegó")
         self._pegar_una_vez()  # exactamente un intento de escritura
         self.log("Pegado solicitado una sola vez; comprobando destino y resultado")
-        # Dejar que GWT procese el clic antes de cambiar el hash de navegación.
-        self.page.wait_for_timeout(1200)
+        # GWT puede tardar en procesar la copia; esta pausa mínima NO confirma
+        # el resultado. La confirmación ocurre al observar el grupo nuevo.
+        self.page.wait_for_timeout(150)
         if self._alerta_destino_invalido():
             raise NoConfirmado(
                 "ARIS rechazó la copia: grupo de destino inválido. No se intentó pegar nuevamente."
@@ -495,27 +499,79 @@ class Aris:
             destino_url=parent_url, destino=parent_name,
             nivel_padre=grandparent_name,
         )
-        deadline = time.monotonic() + self.timeout / 1000
+        deadline = time.monotonic() + max(self.timeout / 1000, 120)
+        last_names = None
+        next_log = time.monotonic() + 8
         while time.monotonic() < deadline:
             if self._alerta_destino_invalido():
                 raise NoConfirmado(
-                    "ARIS rechazó la copia: el grupo destino es descendiente del origen. "
-                    "No se intentó pegar nuevamente."
+                    "ARIS rechazó la copia por destino inválido. "
+                    "Se registró; no se intentó pegar otra vez."
                 )
             despues = {i.name for i in self.listar() if i.kind == "grupo"}
             nuevos = despues - antes
             if len(nuevos) == 1:
                 copied = next(iter(nuevos))
-                self.log(f"Plantilla copiada en {parent_name}: {copied}")
+                self.log(
+                    f"[COPIA][CONFIRMADA] {copied!r}; "
+                    f"grupos antes={len(antes)}, ahora={len(despues)}"
+                )
                 return copied
             if len(nuevos) > 1:
                 raise NoConfirmado(
-                    f"Se detectaron varias carpetas nuevas ({sorted(nuevos)}); revisar manualmente"
+                    f"Se detectaron varias carpetas nuevas ({sorted(nuevos)}); "
+                    "revisar manualmente sin repetir el pegado"
                 )
-            self.page.wait_for_timeout(350)
+            if despues != last_names or time.monotonic() >= next_log:
+                self.log(
+                    f"[COPIA][ESPERA] Sin copia nueva visible aún; "
+                    f"grupos={len(despues)}; faltante esperado=1"
+                )
+                last_names = despues
+                next_log = time.monotonic() + 8
+            self.page.wait_for_timeout(400)
         raise NoConfirmado(
-            f"ARIS no confirmó una copia nueva de {plantilla!r}; no reintentar automáticamente"
+            f"ARIS no confirmó una copia nueva de {plantilla!r} tras esperar "
+            "actualizaciones de la interfaz. No se repite el pegado."
         )
+
+    def validar_copia_completa(self, lote_url: str, lote: str, copia: str):
+        """Comprueba la estructura recién copiada SIN realizar otra escritura.
+
+        Algunas copias aparecen en la tabla antes de que sus hijos estén listos.
+        Se espera reactivamente la presencia de las dos subcarpetas.
+        """
+        self.log(f"[COPIA][ESTRUCTURA] Entrando a {copia!r} para validar contenido")
+        self.entrar(lote_url, lote, copia)
+        deadline = time.monotonic() + max(self.timeout / 1000, 120)
+        requeridas = {PROCESOS, MAPAS}
+        next_log = 0
+        try:
+            while time.monotonic() < deadline:
+                encontradas = {r.name for r in self.listar() if r.kind == "grupo"}
+                faltantes = requeridas - encontradas
+                if not faltantes:
+                    self.log(
+                        f"[COPIA][ESTRUCTURA OK] {copia!r} contiene "
+                        f"{PROCESOS!r} y {MAPAS!r}"
+                    )
+                    return
+                if time.monotonic() >= next_log:
+                    self.log(
+                        f"[COPIA][ESTRUCTURA ESPERA] {copia!r}; "
+                        f"faltan={sorted(faltantes)!r}; "
+                        f"presentes={sorted(encontradas)!r}"
+                    )
+                    next_log = time.monotonic() + 8
+                self.page.wait_for_timeout(400)
+            raise NoConfirmado(
+                f"La copia {copia!r} aparece, pero sus subcarpetas "
+                f"{sorted(requeridas)!r} no se confirmaron dentro del límite. "
+                "No se repetirá el copiado."
+            )
+        finally:
+            if self._grupo_actual() == copia:
+                self.subir_nivel(lote)
 
     def _seleccionar_reporte(self, target: str):
         tab = self.page.locator('li[data-testid="REPORT_REPOSITORY_BUTTON"]')
