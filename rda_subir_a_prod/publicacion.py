@@ -346,6 +346,18 @@ class Publicador:
                         f"publicación={status}. Sin reintentos."
                     )
                     return status == "ok"
+                # Si aparece Aceptar con un texto no documentado, detenerse
+                # inmediatamente para que el usuario pueda inspeccionarlo.
+                # No esperar 10 minutos ni aceptar un aviso desconocido.
+                otro_aceptar = d.get_by_role(
+                    "button", name="Aceptar", exact=True
+                )
+                if otro_aceptar.count() > 0:
+                    raise NoConfirmado(
+                        "ARIS mostró un diálogo con Aceptar, pero el "
+                        f"resultado no se reconoció: {content[:450]!r}. "
+                        "No se cerró el aviso ni se repitió la publicación."
+                    )
 
             # Información complementaria, nunca criterio para dar éxito:
             # el panel conserva informes de ejecuciones anteriores.
