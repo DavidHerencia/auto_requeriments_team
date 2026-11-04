@@ -451,6 +451,36 @@ class Aris:
             raise ArisError("El encabezado de ARIS no indica ninguna carpeta")
         return nombre
 
+    def esperar_overlay_copia(self, timeout_seconds: int = 300):
+        """Solo OBSERVA el backdrop de GWT después de Pegar.
+
+        En el caso de 99 procesos, la copia 47 quedó bloqueada porque
+        .modal-backdrop.in interceptaba clics: un timeout normal de 45 s
+        no indica que el grupo no exista. Nunca se borra el backdrop
+        mediante JavaScript ni se repite Pegar.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        next_log = 0.0
+        while time.monotonic() < deadline:
+            try:
+                visible = self.page.locator(".modal-backdrop.in:visible").count()
+            except Exception:
+                visible = 1
+            if not visible:
+                return
+            if time.monotonic() >= next_log:
+                self.log(
+                    "[COPIA][OVERLAY] ARIS mantiene un diálogo/capa modal "
+                    "que bloquea la navegación. Esperando sin repetir "
+                    "ningún clic ni ninguna escritura."
+                )
+                next_log = time.monotonic() + 10
+            self.page.wait_for_timeout(500)
+        raise NoConfirmado(
+            "La capa modal de ARIS sigue visible después de 300 segundos. "
+            "No se intentó entrar ni repetir el pegado. Revisar el diálogo."
+        )
+
     def _volver_a_destino_tras_copia(self, destino_url: str, destino: str,
                                     nivel_padre: str):
         """Entrar por UI al destino tras pegar; NO cambiar location.hash.
@@ -484,8 +514,10 @@ class Aris:
             raise ArisError(
                 f"No hay un enlace único para entrar en {destino!r}"
             )
-        # Igual que entrar(): la apertura con doble clic ya funciona en ARIS.
-        link.dblclick()  # navegación de lectura; no repite ninguna escritura
+        # La copia puede dejar un backdrop durante minutos. Esperar su
+        # desaparición antes de abrir: no modificar ni eliminar DOM de ARIS.
+        self.esperar_overlay_copia(timeout_seconds=300)
+        link.dblclick(timeout=120000)  # navegación, nunca repetir Pegar
         try:
             self._ready(destino, timeout=60000)
         except ArisError as exc:
@@ -540,7 +572,7 @@ class Aris:
             destino_url=parent_url, destino=parent_name,
             nivel_padre=grandparent_name,
         )
-        deadline = time.monotonic() + max(self.timeout / 1000, 120)
+        deadline = time.monotonic() + max(self.timeout / 1000, 300)
         last_names = None
         next_log = time.monotonic() + 8
         while time.monotonic() < deadline:
@@ -591,7 +623,8 @@ class Aris:
             link = row.locator(".itemTitle .titledesc a.clickable")
             if link.count() != 1:
                 raise ArisError(f"No se encontró un enlace único hacia la copia {copia!r}")
-            link.dblclick()
+            self.esperar_overlay_copia(timeout_seconds=300)
+            link.dblclick(timeout=120000)
             self._ready(copia, timeout=60000)
         else:
             self.entrar(lote_url, lote, copia)
