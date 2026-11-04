@@ -146,7 +146,8 @@ class TestInteracciones(unittest.TestCase):
         link = MagicMock()
         link.count.return_value = 1
 
-        def set_destino():
+        def set_destino(**kwargs):
+            self.assertEqual(kwargs["timeout"], 120000)
             bot.page.url = "https://aris.example/lote"
         link.dblclick.side_effect = set_destino
         bot._row.return_value.locator.return_value = link
