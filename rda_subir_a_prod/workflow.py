@@ -23,6 +23,9 @@ class Resultado:
     informe: str = "pendiente"
     mapa: str = "pendiente"
     diagrama: str = "pendiente"
+    carpeta_inicial: str = ""
+    modelo_origen: str = ""
+    normalizacion: str = "pendiente"
     errores: list[str] = field(default_factory=list)
 
     def as_dict(self):
@@ -68,7 +71,13 @@ def _mapear(aris: Aris):
         LOG.info("Grupos ajenos al lote ignorados: %s", other)
     if not folders:
         raise ArisError("No se encontraron carpetas terminadas en '- Detalle'")
-    results = [Resultado(base=nombre_proceso(f), carpeta_proceso=f) for f in folders]
+    results = [
+        Resultado(
+            base=nombre_proceso(f),
+            carpeta_proceso=f,
+            carpeta_inicial=f,
+        ) for f in folders
+    ]
     duplicates = [x for x in {r.base for r in results}
                   if sum(1 for r in results if r.base == x) > 1]
     if duplicates:
@@ -83,6 +92,144 @@ def _preflight_plantilla(aris: Aris, raiz_url: str, raiz: str, template: str):
         raise ArisError(f"La plantilla requiere {PROCESOS!r} y {MAPAS!r}")
     aris.abrir(raiz_url, expected=raiz)
     return example_url
+
+
+def _normalizar_nombres_origen(
+    aris: Aris, raiz_url: str, raiz: str,
+    records: list[Resultado], log: Callable[[str], None],
+    simular: bool, actualizar: Callable[[], None] | None = None
+):
+    """Alinear el nombre del grupo importado con su MODELO interno.
+
+    Ejemplo:
+      grupo inicial: '7.3.3.1_P02 Protección de datos- Gestión ... - Detalle'
+      modelo:        '7.3.3.1_P02 Protección de datos: Gestión ...'
+      grupo final:   '7.3.3.1_P02 Protección de datos: Gestión ... - Detalle'
+
+    Dos fases: inspeccionar y validar TODOS los modelos primero; después,
+    renombrar solo los grupos que difieran. En simulación no escribir nada.
+    No se modifican modelos, procesos ni mapas, solo el grupo importado.
+    """
+    def guardar_estado():
+        if actualizar is not None:
+            actualizar()
+
+    # Se revisan todas las carpetas antes de modificar ninguna.
+    grupos = {
+        i.name.casefold() for i in aris.listar() if i.kind == "grupo"
+    }
+    propuestas: list[tuple[Resultado, str, str]] = []
+    for index, record in enumerate(records, 1):
+        anterior = record.carpeta_proceso
+        log(
+            f"[NORMALIZACION][INSPECCION] {index}/{len(records)}: "
+            f"abriendo {anterior!r}"
+        )
+        try:
+            aris.entrar(raiz_url, raiz, anterior)
+            modelos = [i.name for i in aris.listar() if i.kind == "modelo"]
+            if len(modelos) != 1:
+                raise ArisError(
+                    f"{anterior!r}: se esperaba exactamente 1 modelo interno; "
+                    f"encontrados={modelos!r}. No se renombra por suposición."
+                )
+            modelo = modelos[0]
+            if not modelo or not modelo.strip():
+                raise ArisError(
+                    f"{anterior!r}: el modelo interno no tiene nombre válido"
+                )
+            esperado = f"{modelo} - Detalle"
+            record.modelo_origen = modelo
+            propuestas.append((record, modelo, esperado))
+            log(
+                f"[NORMALIZACION][MODELO] carpeta={anterior!r}; "
+                f"modelo={modelo!r}; nombre_esperado={esperado!r}"
+            )
+            guardar_estado()
+        except Exception as exc:
+            record.normalizacion = "error_inspeccion"
+            record.errores.append(
+                f"normalizacion: {type(exc).__name__}: {exc}"
+            )
+            guardar_estado()
+            raise
+
+    # Ninguna escritura si hay nombres de salida repetidos o colisiones
+    # con otras carpetas (incluidas las ajenas al lote).
+    objetivos = [esperado.casefold() for _, _, esperado in propuestas]
+    if len(set(objetivos)) != len(objetivos):
+        raise ArisError(
+            "Dos modelos generan el mismo nombre de carpeta - Detalle. "
+            "No se renombró ninguna carpeta."
+        )
+    originales = {r.carpeta_proceso.casefold() for r in records}
+    for record, modelo, esperado in propuestas:
+        if esperado.casefold() in grupos and (
+            esperado.casefold() != record.carpeta_proceso.casefold()
+        ):
+            raise ArisError(
+                f"El nombre destino {esperado!r} ya existe en la carpeta "
+                "de origen. No se renombró ninguna carpeta."
+            )
+        # Colisiones no relacionadas con el lote también quedan bloqueadas.
+        # Se conserva el nombre EXACTO del modelo; no se sustituyen :, /, etc.
+        if esperado.casefold() in originales and (
+            esperado.casefold() != record.carpeta_proceso.casefold()
+        ):
+            raise ArisError(
+                f"El nombre destino {esperado!r} coincide con otra "
+                "carpeta del lote. No se renombró ninguna carpeta."
+            )
+    log(
+        f"[NORMALIZACION][PLAN] Revisadas={len(propuestas)}; "
+        f"a_renombrar={sum(r.carpeta_proceso != expected for r, _, expected in propuestas)}; "
+        f"sin_cambios={sum(r.carpeta_proceso == expected for r, _, expected in propuestas)}"
+    )
+    guardar_estado()
+
+    for record, modelo, esperado in propuestas:
+        anterior = record.carpeta_proceso
+        if anterior == esperado:
+            record.base = modelo
+            record.normalizacion = "sin_cambios"
+            log(f"[NORMALIZACION][OK] Ya coincide: {anterior!r}")
+            guardar_estado()
+            continue
+        if simular:
+            record.base = modelo
+            record.normalizacion = "planificado"
+            log(
+                f"[NORMALIZACION][SIMULACION] "
+                f"{anterior!r} -> {esperado!r} (sin cambios en ARIS)"
+            )
+            guardar_estado()
+            continue
+        log(
+            f"[NORMALIZACION][RENOMBRAR] "
+            f"{anterior!r} -> {esperado!r}"
+        )
+        try:
+            # Un único renombrado. Si ARIS no confirma, se detiene el lote.
+            aris.renombrar(raiz_url, raiz, anterior, esperado)
+        except Exception as exc:
+            record.normalizacion = "no_confirmado"
+            record.errores.append(
+                f"normalizacion: {type(exc).__name__}: {exc}"
+            )
+            guardar_estado()
+            log(
+                f"[NORMALIZACION][DETENIDO] No se confirmó {anterior!r} "
+                "y no se repetirá el renombrado"
+            )
+            raise
+        record.carpeta_proceso = esperado
+        record.base = modelo
+        record.normalizacion = "ok"
+        log(
+            f"[NORMALIZACION][OK] Carpeta corregida a partir "
+            f"del nombre del modelo: {esperado!r}"
+        )
+        guardar_estado()
 
 
 def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
@@ -141,6 +288,15 @@ def ejecutar_flujo_1(url: str, perfil: Path, carpeta_resultados: Path,
             doc["raiz"] = raiz
             update(records)
             _preflight_plantilla(aris, url, raiz, template)
+            # Validar todos los modelos primero. El modelo interno manda:
+            # la carpeta importada debe llamarse '<modelo> - Detalle'.
+            # Se hace antes de crear el lote o mover/copiar la plantilla.
+            _normalizar_nombres_origen(
+                aris, url, raiz, records, log, simular=simular,
+                actualizar=lambda: update(records),
+            )
+            # Volver a la raíz, pues la inspección entra en cada origen.
+            aris.abrir(url, expected=raiz)
             if simular:
                 doc["estado"] = "simulacion_correcta"
                 for record in records:
