@@ -241,7 +241,19 @@ def ejecutar_flujo_1_batched(url: str, perfil: Path, carpeta_resultados: Path,
             "bloques": [], "errores_globales": [],
         }
 
+    doc.setdefault("copias", {
+        "total_esperado": len(records), "originales": 1,
+        "copias_nuevas_esperadas": max(0, len(records) - 1),
+        "copias_nuevas_observadas": 0,
+        "copias_nuevas_validadas": 0,
+        "estructura_total_validada": 1,
+        "nombres": [], "incidencias": [],
+    })
+
     def save():
+        doc["copias"]["asignadas_a_procesos"] = sum(
+            r.plantilla == "ok" for r in records
+        )
         if records:
             doc["procesos"] = [r.as_dict() for r in records]
         else:
@@ -309,6 +321,14 @@ def ejecutar_flujo_1_batched(url: str, perfil: Path, carpeta_resultados: Path,
                     f"{len(records)} procesos / "
                     f"{len(list(bloques(records)))} bloques")
 
+            # Conservar los contadores de la versión antigua, si existen.
+            # En lotes nuevos se conocen al terminar el mapeo global.
+            doc["copias"]["total_esperado"] = len(records)
+            doc["copias"]["copias_nuevas_esperadas"] = max(0, len(records) - 1)
+            if plantilla not in doc["copias"]["nombres"]:
+                doc["copias"]["nombres"].insert(0, plantilla)
+            save()
+
             # La plantilla original se reserva hasta el ÚLTIMO proceso.
             # Esto permite generar nuevas copias después de un bloque completo.
             for numero, chunk in bloques(records):
@@ -369,10 +389,16 @@ def ejecutar_flujo_1_batched(url: str, perfil: Path, carpeta_resultados: Path,
                         )
                         r.estructura = libre
                         r.plantilla = "copiada"
+                        if libre not in doc["copias"]["nombres"]:
+                            doc["copias"]["nombres"].append(libre)
+                            doc["copias"]["copias_nuevas_observadas"] += 1
                         save()
                         log(f"[BATCH][COPIA] Copia nueva confirmada {libre!r}")
                         aris.validar_copia_completa(lote_url, lote, libre)
                         lote_url = aris.page.url
+                        doc["copias"]["copias_nuevas_validadas"] += 1
+                        doc["copias"]["estructura_total_validada"] += 1
+                        save()
                     r.estructura = libre
                     r.plantilla = "en_curso"
                     save()
