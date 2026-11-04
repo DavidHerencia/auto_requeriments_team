@@ -186,6 +186,7 @@ class App:
         except (ValueError, OSError) as exc:
             messagebox.showerror("Reporte inválido", str(exc))
             return
+        self.simular.set(False)  # la reanudación siempre es ejecución real
         self._start(False, flujo=flujo, resume_path=Path(filename))
 
     def _start(self, simular: bool, flujo: int = 1,
@@ -353,7 +354,9 @@ class App:
             self.console.insert(
                 "end",
                 f"ESTADO: {data['estado']}\n"
-                f"COPIAS: {data.get('copias', {})}\n"
+                f"BLOQUE ACTUAL: {data.get('bloque_actual', '-')} "
+                f"/ {data.get('resumen', {}).get('bloques', '-')}\n"
+                f"COPIAS (histórico): {data.get('copias', {})}\n"
                 f"PUBLICACIÓN: {data.get('registros', []) if data.get('flujo') == 2 else ''}\n"
                 f"RESUMEN: {data.get('resumen', {})}\n"
                 f"ERRORES: {data.get('errores_globales', [])}\n"
