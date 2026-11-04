@@ -142,6 +142,7 @@ class TestInteracciones(unittest.TestCase):
         bot._grupo_actual = Mock(return_value="Raíz")
         bot._row = Mock()
         bot._ready = Mock()
+        bot.esperar_overlay_copia = Mock()
         link = MagicMock()
         link.count.return_value = 1
 
@@ -157,7 +158,8 @@ class TestInteracciones(unittest.TestCase):
         bot._row.return_value.locator.assert_called_once_with(
             ".itemTitle .titledesc a.clickable"
         )
-        link.dblclick.assert_called_once()
+        bot.esperar_overlay_copia.assert_called_once_with(timeout_seconds=300)
+        link.dblclick.assert_called_once_with(timeout=120000)
         bot._ready.assert_called_once_with("Procesados", timeout=60000)
 
     def test_no_entra_dos_veces_si_aris_ya_esta_en_destino(self):
@@ -226,6 +228,7 @@ class TestInteracciones(unittest.TestCase):
         bot._ready = Mock()
         bot.entrar = Mock()
         bot.subir_nivel = Mock()
+        bot.esperar_overlay_copia = Mock()
         link = MagicMock()
         link.count.return_value = 1
         bot._row.return_value.locator.return_value = link
@@ -238,9 +241,18 @@ class TestInteracciones(unittest.TestCase):
         )
         bot.entrar.assert_not_called()
         bot._row.assert_called_once_with("00 Ejemplo(1)", "grupo")
-        link.dblclick.assert_called_once()
+        bot.esperar_overlay_copia.assert_called_once_with(timeout_seconds=300)
+        link.dblclick.assert_called_once_with(timeout=120000)
         bot._ready.assert_called_once_with("00 Ejemplo(1)", timeout=60000)
         bot.subir_nivel.assert_called_once_with("Procesados")
+
+    def test_overlay_impide_navegar_y_no_hace_segundo_pegado(self):
+        bot = Aris(Path("."), Mock())
+        bot.page = MagicMock()
+        bot.page.locator.return_value.count.side_effect = [1, 1, 0]
+        bot.esperar_overlay_copia(timeout_seconds=300)
+        self.assertEqual(bot.page.wait_for_timeout.call_count, 2)
+        bot.page.wait_for_timeout.assert_any_call(500)
 
     def test_balance_final_espera_refresco_antes_de_continuar(self):
         bot = Aris(Path("."), Mock())
