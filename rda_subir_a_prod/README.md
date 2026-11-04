@@ -198,3 +198,20 @@ Se revisaron además las capturas del cierre del informe: después del segundo `
 La casilla de continuación **no está limitada a los dos códigos de la prueba** y no impide crear nuevos códigos. Los logs muestran `[PROD][DESTINO][INVENTARIO]`, N5 existentes, N5 por crear y otros elementos conservados.
 
 Se añadieron pruebas unitarias del resumen, carpetas ajenas, mezcla de grupos existentes y faltantes, y ambas confirmaciones de la publicación. **No se han ejecutado las pruebas ni el informe real desde aquí**: probar localmente con `python -m unittest discover -s tests -v`, luego validar el flujo y observar los pasos.
+
+## Corrección: normalización de carpetas importadas desde el modelo (04/11/2026)
+
+**Alcance: solo flujo 1; el flujo 2 sigue validando coincidencia exacta.**
+
+Los archivos XML de origen pueden tener nombres adaptados a Windows porque `:`, `/` o `\\` no son válidos en nombres de archivo. ARIS importa el modelo con su título real, pero el grupo creado con el nombre del archivo puede terminar distinto. Para que el flujo 2 reciba nombres alineados, el flujo 1 ahora realiza una revisión inicial:
+
+1. Tras mapear las carpetas con sufijo `- Detalle` y validar `00 Ejemplo`, entra a **cada grupo importado** y lee el nombre del **único modelo** que debe contener.
+2. Calcula el nombre canónico del grupo como `<nombre exacto del modelo> - Detalle`. No altera el modelo ni sustituye signos por guiones. Ejemplo: `7.3.3.1_P02 Protección de datos- Gestión de bloqueos DLP - Detalle` → `7.3.3.1_P02 Protección de datos: Gestión de bloqueos DLP - Detalle`.
+3. Comprueba **todos** los modelos antes de escribir nada. Si falta el modelo, hay más de uno, se repite un nombre de salida o ya existe un grupo con el destino previsto, interrumpe sin renombrar por suposición.
+4. En **Simulación** reporta los cambios planeados y no renombra. En ejecución real, renombra **una sola vez** cada grupo que difiere. Si no confirma el renombrado, detiene el flujo sin reintentar.
+5. Utiliza el nombre corregido del grupo y el título real del modelo para los pasos **ya existentes**: copias, movimiento, generación de mapas y renombrado de resultados.
+
+Logs: `[NORMALIZACION][INSPECCION]`, `[NORMALIZACION][MODELO]`, `[NORMALIZACION][PLAN]`, `[NORMALIZACION][SIMULACION]`, `[NORMALIZACION][RENOMBRAR]`, `[NORMALIZACION][OK]`, `[NORMALIZACION][DETENIDO]`. El JSON conserva `carpeta_inicial`, `modelo_origen` y `normalizacion`. Los tests offline están en `tests/test_normalizacion.py`.
+
+**Limitación:** si ARIS no permite crear una carpeta con algún carácter del nombre real del modelo, el bot debe detenerse y reportarlo. No modifica ni simplifica el título del modelo para forzar el cambio. No se ha probado este caso de caracteres especiales en ARIS real.
+
