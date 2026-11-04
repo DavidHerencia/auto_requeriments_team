@@ -4,7 +4,7 @@ Proyecto independiente dentro de `auto_requeriments_team`. Automatiza **solo ARI
 
 ## Estado
 
-Primera implementación del **flujo 1** basada en capturas y DOM del 03/11/2026. **No se ha validado end-to-end contra ARIS corporativo.** Probar primero con carpetas temporales y un solo proceso. No ejecutar contra carpetas de producción sin verificar cada transición.
+**Estado al 04/11/2026:** flujos 1 y 2 integrados en modo bloques de 10 y reanudación desde JSON. Los pasos ARIS de ambos flujos ya tuvieron pruebas manuales exitosas; **la nueva orquestación por bloques todavía no se ha validado de extremo a extremo en ARIS corporativo**. Ejecutar tests locales y comenzar con un lote pequeño.
 
 ## Instalar y abrir
 
@@ -55,7 +55,7 @@ Si ARIS responde **fallo**, registrar y **no reintentar** el informe ni renombra
 - Las listas ARIS se virtualizan y pueden cambiar; el lector implementa desplazamiento, pero no asume cobertura ilimitada.
 - La reanudación automática está deshabilitada por seguridad: tampoco hay reintentos implícitos.
 - El enlace se valida a un host `*.igrupobbva` y ruta `#default/repository/...`.
-- **Link 2 y link 3** aparecen en la interfaz como reserva; **flujo 2 no está implementado** y su botón está deshabilitado.
+- **Link 2** es el origen de procesos validados en el flujo 2; **Link 1** es el destino atencion_r. Link 3 sigue reservado y sin uso.
 - Los logs y reportes se guardan localmente; evita distribuirlos si contienen nombres corporativos.
 
 ## Archivos
