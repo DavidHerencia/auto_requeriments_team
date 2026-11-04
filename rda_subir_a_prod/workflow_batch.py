@@ -171,7 +171,7 @@ def _estado_incierto(r):
     # Operaciones de escritura ejecutadas pero sin confirmación final:
     # nunca volver a pulsarlas en un relanzamiento.
     return (
-        r.plantilla in {"en_curso", "no_confirmado", "error"}
+        r.plantilla in {"copiando", "copiada", "en_curso", "no_confirmado", "error"}
         or r.movimiento in {"en_curso", "error", "no_confirmado"}
         or r.informe in {"en_curso", "error", "no_confirmado"}
         or r.mapa in {"en_curso", "error", "no_confirmado"}
@@ -242,8 +242,15 @@ def ejecutar_flujo_1_batched(url: str, perfil: Path, carpeta_resultados: Path,
         }
 
     def save():
-        doc["procesos"] = [r.as_dict() for r in records]
-        _resumen(doc, records)
+        if records:
+            doc["procesos"] = [r.as_dict() for r in records]
+        else:
+            # Durante el primer escaneo, el mapeo provisional vive en doc
+            # hasta que la función devuelve todos los records al llamador.
+            doc.setdefault("procesos", [])
+        _resumen(doc, records or [
+            _reconstruir(r) for r in doc["procesos"]
+        ])
         _guardar(path, doc)
 
     save()
@@ -352,9 +359,17 @@ def ejecutar_flujo_1_batched(url: str, perfil: Path, carpeta_resultados: Path,
                             raise ArisError(
                                 "La plantilla original no está disponible para más copias"
                             )
+                        # Registrar intención ANTES del pegado, pues podría
+                        # completarse en ARIS aunque Playwright pierda el
+                        # resultado. En un resume no reemitir este COPY/PASTE.
+                        r.plantilla = "copiando"
+                        save()
                         libre = aris.copiar_plantilla(
                             lote_url, lote, plantilla, url, raiz
                         )
+                        r.estructura = libre
+                        r.plantilla = "copiada"
+                        save()
                         log(f"[BATCH][COPIA] Copia nueva confirmada {libre!r}")
                         aris.validar_copia_completa(lote_url, lote, libre)
                         lote_url = aris.page.url
