@@ -273,20 +273,13 @@ def ejecutar_flujo_1_batched(url: str, perfil: Path, carpeta_resultados: Path,
                     )
             else:
                 doc["raiz"] = raiz
-                holder = []
-                def actualizar_inventario():
-                    nonlocal records
-                    if holder:
-                        records = holder[0]
-                    save()
-                # El mapeo y la lectura de modelos ocurren EN LA MISMA
-                # entrada a cada carpeta; no hay segunda inspección por grupo.
-                aris.abrir(url, expected=raiz)
-                items = aris.listar()
-                # Pasar la instantánea existente evita una segunda enumeración
-                # de la raíz en el preparador.
+                # Un listado inicial de la raíz; después se entra a cada
+                # modelo una sola vez para mapearlo y obtener su título.
+                # Durante el escaneo guardar el borrador directamente,
+                # pues 'records' aún no se asignó en este método.
                 plantilla, records = _preparar_registros(
-                    aris, url, raiz, doc, log, simular, save
+                    aris, url, raiz, doc, log, simular,
+                    lambda: _guardar(path, doc)
                 )
                 save()
                 if simular:
