@@ -186,6 +186,20 @@ class App:
         except (ValueError, OSError) as exc:
             messagebox.showerror("Reporte inválido", str(exc))
             return
+        if (flujo == 1 and not doc.get("batch_size")
+                and (doc.get("copias") or {}).get("incidencias")):
+            if not messagebox.askyesno(
+                "Reanudar un lote de la versión anterior",
+                "Este JSON pertenece al flujo anterior, que no registraba "
+                "el estado de cada copia ANTES del pegado.\n\n"
+                "Revisa en ARIS el lote Procesados original y las copias "
+                "00 Ejemplo(n), especialmente la que pudo quedar pendiente "
+                "detrás del diálogo modal.\n\n"
+                "Al continuar, el bot enumerará las copias existentes "
+                "y no volverá a crear las que encuentre.\n\n"
+                "¿Ya inspeccionaste el lote y autorizas continuar?",
+            ):
+                return
         self.simular.set(False)  # la reanudación siempre es ejecución real
         self._start(False, flujo=flujo, resume_path=Path(filename))
 
