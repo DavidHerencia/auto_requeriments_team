@@ -26,6 +26,8 @@ class Resultado:
     carpeta_inicial: str = ""
     modelo_origen: str = ""
     normalizacion: str = "pendiente"
+    batch: int = 0
+    estructura: str = ""
     errores: list[str] = field(default_factory=list)
 
     def as_dict(self):
