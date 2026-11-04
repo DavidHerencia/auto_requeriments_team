@@ -9,7 +9,7 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from workflow import ejecutar_flujo_1
 from workflow_prod import ejecutar_flujo_2
@@ -35,7 +35,7 @@ def configurar_logs(events: queue.Queue):
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("RDA · ARIS | Preparación y pase a producción")
+        self.root.title("RDA · ARIS | Procesamiento por bloques de 10")
         self.root.geometry("860x700")
         self.root.minsize(680, 560)
         self.events = queue.Queue()
@@ -97,6 +97,22 @@ class App:
             text="Flujo 2: usar N5 existentes SOLO si están vacíos",
             variable=self.continuar_n5_vacios,
         ).pack(side="left", padx=(12, 0))
+        resume_row = ttk.Frame(p)
+        resume_row.pack(fill="x", pady=(4, 4))
+        ttk.Label(
+            resume_row,
+            text="Bloques de 10 · Recuperación mediante JSON (no repetir acciones inciertas)",
+        ).pack(side="left")
+        self.resume1_btn = ttk.Button(
+            resume_row, text="Reanudar flujo 1",
+            command=lambda: self._resume(1),
+        )
+        self.resume1_btn.pack(side="right", padx=(8, 0))
+        self.resume2_btn = ttk.Button(
+            resume_row, text="Reanudar flujo 2",
+            command=lambda: self._resume(2),
+        )
+        self.resume2_btn.pack(side="right", padx=(8, 0))
         log_actions = ttk.Frame(p)
         log_actions.pack(fill="x", pady=(12, 5))
         ttk.Label(log_actions, text="Registro de ejecución").pack(side="left")
@@ -144,7 +160,36 @@ class App:
         logging.info(message)
         self.events.put(("log", message))
 
-    def _start(self, simular: bool, flujo: int = 1):
+    def _resume(self, flujo: int):
+        """El usuario elige el checkpoint exacto; nunca buscar uno por suposición."""
+        if self.busy:
+            return
+        RESULTS.mkdir(parents=True, exist_ok=True)
+        filename = filedialog.askopenfilename(
+            parent=self.root,
+            title=f"Seleccionar reporte JSON del flujo {flujo} para reanudar",
+            initialdir=str(RESULTS),
+            filetypes=[("Reporte RDA JSON", "*.json")],
+        )
+        if not filename:
+            return
+        try:
+            doc = json.loads(Path(filename).read_text(encoding="utf-8"))
+            if doc.get("flujo") != flujo:
+                raise ValueError("El JSON pertenece a otro flujo")
+            if doc.get("estado") == "completado":
+                raise ValueError("Esta ejecución ya figura completada")
+            if (flujo == 1 and doc.get("modo") != "ejecucion") or (
+                flujo == 2 and doc.get("simulacion") is True
+            ):
+                raise ValueError("No se reanudan reportes de simulación")
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Reporte inválido", str(exc))
+            return
+        self._start(False, flujo=flujo, resume_path=Path(filename))
+
+    def _start(self, simular: bool, flujo: int = 1,
+               resume_path: Path | None = None):
         if self.busy:
             return
         try:
@@ -156,6 +201,21 @@ class App:
         except ValueError as exc:
             messagebox.showerror("Enlace inválido", str(exc))
             return
+        if resume_path:
+            report = json.loads(resume_path.read_text(encoding="utf-8"))
+            origen_original = report.get(
+                "url" if flujo == 1 else "link1_destino"
+            )
+            segundo_original = report.get("link2_origen") if flujo == 2 else None
+            if origen_original != url1 or (
+                flujo == 2 and segundo_original != url2
+            ):
+                messagebox.showerror(
+                    "Links no coinciden",
+                    "Los enlaces de la interfaz deben ser exactamente los "
+                    "del reporte JSON original. No se cambiarán automáticamente."
+                )
+                return
         if not simular:
             if flujo == 2:
                 texto = (
@@ -180,6 +240,14 @@ class App:
                     "Flujo 1 creará, copiará, moverá y renombrará carpetas "
                     "y lanzará informes. Sin reintentos automáticos.\n\n¿Ejecutar?"
                 )
+            if resume_path:
+                texto = (
+                    f"REANUDAR FLUJO {flujo} DESDE EL CHECKPOINT\n\n"
+                    f"{resume_path.name}\n\n"
+                    "Se conservarán los procesos ya confirmados. "
+                    "No se repetirán copias, movimientos, informes ni "
+                    "publicaciones cuyo resultado sea incierto.\n\n"
+                ) + texto
             if not messagebox.askyesno("Confirmar cambios reales en ARIS", texto):
                 return
         self._save()
@@ -190,31 +258,35 @@ class App:
         )
         for b in (
             self.validate_btn, self.execute_btn,
-            self.validate_prod_btn, self.execute_prod_btn
+            self.validate_prod_btn, self.execute_prod_btn,
+            self.resume1_btn, self.resume2_btn,
         ):
             b.configure(state="disabled")
         continuar = bool(self.continuar_n5_vacios.get()) if flujo == 2 else False
         t = threading.Thread(
             target=self._worker,
-            args=(flujo, url1, url2, simular, continuar),
+            args=(flujo, url1, url2, simular, continuar, resume_path),
             daemon=True
         )
         t.start()
 
     def _worker(self, flujo: int, url1: str, url2: str | None,
-                simular: bool, continuar: bool = False):
+                simular: bool, continuar: bool = False,
+                resume_path: Path | None = None):
         path, handler = configurar_logs(self.events)
         self._log(f"[FLUJO {flujo}] Log guardado en {path}")
         try:
             if flujo == 1:
                 result = ejecutar_flujo_1(
-                    url1, PROFILE, RESULTS, self._log, simular=simular
+                    url1, PROFILE, RESULTS, self._log, simular=simular,
+                    resume_path=resume_path,
                 )
             else:
                 result = ejecutar_flujo_2(
                     url1, url2, PROFILE, RESULTS,
                     self._log, simular=simular,
                     continuar_n5_vacios=continuar,
+                    resume_path=resume_path,
                 )
             self.events.put(("done", str(result)))
         except Exception as exc:
@@ -233,13 +305,17 @@ class App:
                     self.console.insert("end", val + "\n")
                     self.console.see("end")
                     self.console.configure(state="disabled")
-                    if val.startswith(("[MAPEO]", "[COPIAS]", "[COPIA]", "[RENOMBRADO]", "[PROD]")):
+                    if val.startswith((
+                        "[MAPEO]", "[COPIAS]", "[COPIA]", "[RENOMBRADO]",
+                        "[PROD]", "[BATCH]", "[NORMALIZACION]", "[REANUDACION]",
+                    )):
                         self.state.set(val[:160])
                 else:
                     self.busy = False
                     for b in (
                         self.validate_btn, self.execute_btn,
-                        self.validate_prod_btn, self.execute_prod_btn
+                        self.validate_prod_btn, self.execute_prod_btn,
+                        self.resume1_btn, self.resume2_btn,
                     ):
                         b.configure(state="normal")
                     self.state.set("Finalizado; revisa reporte JSON" if kind == "done" else "Error")
