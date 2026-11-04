@@ -215,3 +215,33 @@ Logs: `[NORMALIZACION][INSPECCION]`, `[NORMALIZACION][MODELO]`, `[NORMALIZACION]
 
 **Limitación:** si ARIS no permite crear una carpeta con algún carácter del nombre real del modelo, el bot debe detenerse y reportarlo. No modifica ni simplifica el título del modelo para forzar el cambio. No se ha probado este caso de caracteres especiales en ARIS real.
 
+
+
+## Ejecución por bloques y recuperación — 04/11/2026
+
+**Flujos 1 y 2:** grupos de máximo **10 procesos**. Para 99 diagramas son diez bloques: 9 de 10 y uno de 9. Se guarda un checkpoint JSON después de cada paso confirmado y antes de acciones de escritura ambiguas. El JSON no reemplaza la verificación de ARIS.
+
+### Flujo 1
+- Mapeo y normalización global: una sola enumeración de la carpeta origen y una visita por cada carpeta para leer el nombre real del modelo. Antes de renombrar se verifican todas las colisiones. Simulación: ninguna escritura.
+- Un único directorio Procesados con las carpetas de proceso directamente dentro, compatible con el flujo 2.
+- Por cada bloque: copiar/renombrar las estructuras faltantes, mover los diagramas, lanzar los informes, refrescar y renombrar mapas y modelos. Cada bloque finaliza antes del siguiente.
+- Se conserva el método de copiar 00 Ejemplo. El log anterior confirmó 46 copias; en la siguiente un modal-backdrop.in bloqueó el doble clic. Ahora se espera hasta 300 segundos a que se retire el overlay, **sin manipular el DOM ni reintentar Pegar**. El doble clic tiene margen ampliado y la comprobación de la copia también permite hasta 300 segundos.
+- La plantilla se conserva en el lote hasta el último proceso, para poder generar copias en todos los bloques. Al finalizar se renombra como el último proceso. Mientras no termine, el lote puede contener 00 Ejemplo y NO debe usarse como origen del flujo 2.
+- En una recuperación del lote antiguo con 46 copias, la aplicación exige una revisión previa. Reutiliza los grupos 00 Ejemplo(n) existentes, tras comprobar que tengan 00 Procesos y 01 Mapas y Catálogos. No elimines el lote original.
+
+### Flujo 2
+- Antes de publicar, revisa las estructuras de los procesos que estén pendientes y el destino.
+- Para cada bloque crea solamente los códigos N5 faltantes, verifica las carpetas y lanza como máximo diez informes.
+- Al reanudar: **ok**, **fallo_aris**, **en_curso** y **no_confirmado** nunca vuelven a publicarse automáticamente. Los estados inciertos se dejan para revisión; no se confunde un reporte viejo con el resultado de un informe nuevo.
+- Las carpetas ajenas al lote en atencion_r no se modifican. Los N5 de este lote que ya existen solo se reutilizan si están vacíos y fueron verificados.
+
+### Recuperar un lote interrumpido
+1. Mantener exactamente los mismos enlaces de la ejecución original.
+2. Pulsar **Reanudar flujo 1** o **Reanudar flujo 2**.
+3. Elegir el reporte JSON de esa ejecución en %LOCALAPPDATA%\rda_subir_a_prod\resultados (por ejemplo: flujo1_20261104_165721_933851.json).
+4. Aceptar la operación real: el checkpoint conserva los procesos completos y no emite otra vez operaciones con resultados inciertos.
+5. Revisar los registros [BATCH] y [PROD][BATCH] y el resumen del JSON.
+
+**No iniciar una ejecución nueva si la plantilla ya fue movida durante un lote interrumpido:** utiliza el JSON original para recuperar el trabajo. Si existen escrituras indeterminadas, inspecciona ARIS antes de autorizar la reanudación.
+
+Pruebas locales: python -m compileall -q . y python -m unittest discover -s tests -v. La ejecución por bloques aún requiere verificación contra ARIS corporativo.
