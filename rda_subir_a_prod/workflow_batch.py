@@ -371,6 +371,14 @@ def ejecutar_flujo_1_batched(url: str, perfil: Path, carpeta_resultados: Path,
                         log(f"[BATCH][REUSO] Grupo vacío previo {libre!r} -> {r.base!r}")
                         aris.validar_copia_completa(lote_url, lote, libre)
                         lote_url = aris.page.url
+                        if libre not in doc["copias"]["nombres"]:
+                            # Por ejemplo: copia 47 finalizada en ARIS pero
+                            # ausente del JSON antiguo al quedar un modal.
+                            doc["copias"]["nombres"].append(libre)
+                            doc["copias"]["copias_nuevas_observadas"] += 1
+                            doc["copias"]["copias_nuevas_validadas"] += 1
+                            doc["copias"]["estructura_total_validada"] += 1
+                            save()
                     elif usar_original:
                         libre = plantilla
                         log("[BATCH][PLANTILLA] Último proceso usará la plantilla original")
