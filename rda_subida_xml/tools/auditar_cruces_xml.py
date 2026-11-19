@@ -95,18 +95,24 @@ def archivo_xml(ruta):
 def auditar(registros):
     """Relaciona por id_solicitud, jamás por posición ni por nombre de archivo."""
     originales = {}
+    metadata = {}
     for r in registros:
         sid = str(r.get("id_solicitud", ""))
-        if not sid or sid in originales:
-            raise ValueError(f"id_solicitud ausente o duplicado: {sid!r}")
-        originales[sid] = datos_xml(r.get("xml", ""))
+        key = str(r.get("_audit_key", sid))
+        if not sid or key in originales:
+            raise ValueError(f"id_solicitud ausente o duplicado en la fuente: {key!r}")
+        originales[key] = datos_xml(r.get("xml", ""))
+        metadata[key] = {
+            "id_solicitud": sid, "id_n5": str(r.get("id_n5", "")).upper()
+        }
 
     salida = []
     for r in registros:
         sid = r["id_solicitud"]
+        key = str(r.get("_audit_key", sid))
         n5 = str(r.get("id_n5", "")).strip().upper()
         nombre = str(r.get("nombre_proceso", "")).strip()
-        original = originales[sid]
+        original = originales[key]
         captura_texto, captura_error = archivo_xml(r.get("xml_capturado_ruta"))
         final_texto, final_error = archivo_xml(r.get("xml_corregido_ruta"))
         captura = datos_xml(captura_texto)
@@ -116,7 +122,8 @@ def auditar(registros):
         score, comunes = similitud(original, disponible)
         posibles = []
         for otro_id, otro in originales.items():
-            if otro_id == sid:
+            if (otro_id == key
+                    or metadata[otro_id]["id_solicitud"] == sid):
                 continue
             alt, coincidentes = similitud(disponible, otro)
             if alt is not None and coincidentes >= 3:
@@ -163,6 +170,7 @@ def auditar(registros):
         )
         salida.append({
             "id_solicitud": sid,
+            "archivo_checkpoint": r.get("_checkpoint", ""),
             "id_n5": n5,
             "nombre_proceso": nombre,
             "estado": estado,
@@ -190,14 +198,38 @@ def auditar(registros):
     return salida
 
 
-def ejecutar(checkpoint: Path, output_prefix: Path | None = None):
-    contenido = json.loads(checkpoint.read_text(encoding="utf-8"))
-    registros = contenido.get("registros")
-    if not isinstance(registros, list):
-        raise ValueError("El checkpoint no contiene una lista registros[]")
+def ejecutar(checkpoint: Path | None = None,
+            output_prefix: Path | None = None,
+            directorio: Path | None = None):
+    if (checkpoint is None) == (directorio is None):
+        raise ValueError("Indica exactamente uno: --checkpoint o --directorio")
+    fuentes = (
+        [checkpoint] if checkpoint else sorted(
+            directorio.glob("procesados_*.json")
+        )
+    )
+    if not fuentes:
+        raise ValueError("No se encontraron archivos procesados_*.json")
+    registros = []
+    for fuente in fuentes:
+        contenido = json.loads(fuente.read_text(encoding="utf-8"))
+        actuales = contenido.get("registros")
+        if not isinstance(actuales, list):
+            raise ValueError(f"El checkpoint {fuente} no tiene registros[]")
+        for r in actuales:
+            entrada = dict(r)
+            entrada["_checkpoint"] = fuente.name
+            # Permite solicitudes repetidas en distintos lotes sin juntar
+            # accidentalmente sus XML, e impide compararlas consigo mismas.
+            entrada["_audit_key"] = (
+                fuente.name + "::" + str(r.get("id_solicitud", ""))
+            )
+            registros.append(entrada)
     salida = auditar(registros)
     marca = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base = output_prefix or checkpoint.parent / f"auditoria_cruces_{marca}"
+    base = output_prefix or (checkpoint.parent if checkpoint else directorio) / (
+        f"auditoria_cruces_{marca}"
+    )
     base.parent.mkdir(parents=True, exist_ok=True)
     csv_path = base.with_suffix(".csv")
     json_path = base.with_suffix(".json")
@@ -209,7 +241,7 @@ def ejecutar(checkpoint: Path, output_prefix: Path | None = None):
         writer.writeheader()
         writer.writerows(salida)
     with json_path.open("x", encoding="utf-8") as f:
-        json.dump({"origen": str(checkpoint), "total": len(salida),
+        json.dump({"fuentes": [str(x) for x in fuentes], "total": len(salida),
                    "estados": dict(Counter(r["estado"] for r in salida)),
                    "registros": salida}, f, ensure_ascii=False, indent=2)
     return csv_path, json_path, Counter(r["estado"] for r in salida)
@@ -217,12 +249,17 @@ def ejecutar(checkpoint: Path, output_prefix: Path | None = None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, required=True,
-                        help="JSON procesados_*.json del RDA de subida XML")
+    origen = parser.add_mutually_exclusive_group(required=True)
+    origen.add_argument("--checkpoint", type=Path,
+                        help="Un solo procesados_*.json del RDA XML")
+    origen.add_argument("--directorio", type=Path,
+                        help="Todos los procesados_*.json de una carpeta")
     parser.add_argument("--salida", type=Path,
                         help="Prefijo de salida, sin extensión (opcional)")
     args = parser.parse_args()
-    csv_path, json_path, conteo = ejecutar(args.checkpoint, args.salida)
+    csv_path, json_path, conteo = ejecutar(
+        args.checkpoint, args.salida, args.directorio
+    )
     print("Auditoría local de SOLO LECTURA (sin modificar XML ni ARIS)")
     print("Estados:", dict(conteo))
     print("CSV:", csv_path)
