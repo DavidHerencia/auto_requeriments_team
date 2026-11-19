@@ -610,6 +610,19 @@ revisar la salida de ChatGPT; si el capturado es correcto pero el final no,
 revisar postprocesamiento; si el final es correcto pero ARIS muestra otro
 diagrama, revisar la importación en ARIS.
 
+Los originales pueden ser XML malformados: el auditor intenta recuperar sus
+tareas y códigos mediante lectura textual, y marca el método como
+texto_recuperado. Esa lectura es parcial; **no equivale a validar el XML**.
+Se compara además el código dentro del XML capturado ANTES de que el
+postprocesamiento reetiquete process y lane. Se exponen similitudes de nombres
+y de IDs de tareas, coincidencia capturado-final y hashes SHA-256.
+
+Para los casos 4.4.1.1_P02 y 4.4.1.11_P01, revisar el código del process en
+capturados, el proceso y las actividades originales, y confirmar en los logs
+si la extracción fue por descarga o por bloque de código. Una respuesta
+correcta visible en el chat no prueba qué descarga guardó el bot en una
+ejecución distinta; comparar con el intento exacto registrado en el JSON.
+
 Los estados SOSPECHA_ALTA y REVISAR requieren inspección humana.
 El mensaje de ARIS 'informe completo' no certifica identidad semántica.
 El postprocesamiento actual sincroniza nombres process/lane, pero no
