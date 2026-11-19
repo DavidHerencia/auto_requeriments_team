@@ -591,6 +591,8 @@ tiene un título correcto pero sus actividades pertenecen a otro proceso.
 Comando, desde rda_subida_xml:
 
 ~~~powershell
+python tools/auditar_cruces_xml.py --directorio "data/exportaciones"
+# o para un único lote:
 python tools/auditar_cruces_xml.py --checkpoint "data/exportaciones/procesados_NOMBRE_LOTE.json"
 ~~~
 
