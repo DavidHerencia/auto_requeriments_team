@@ -181,12 +181,18 @@ def auditar(registros):
 
         source_code = codigo_en(original["proceso"])
         lane_code = codigo_en(original["lane"])
+        captured_code = codigo_en(captura["proceso"])
+        captured_lane_code = codigo_en(captura["lane"])
         expected_title = f"{n5} {nombre}"
         causa = []
         if source_code and source_code != n5:
             causa.append("XML_ORIGINAL_PROCESS_CON_OTRO_N5")
         if lane_code and lane_code != n5:
             causa.append("XML_ORIGINAL_LANE_CON_OTRO_N5")
+        if captura_texto and captured_code and captured_code != n5:
+            causa.append("CAPTURADO_PROCESS_CON_OTRO_N5")
+        if captura_texto and captured_lane_code and captured_lane_code != n5:
+            causa.append("CAPTURADO_LANE_CON_OTRO_N5")
         if final_texto and final["proceso"] != expected_title:
             causa.append("TITULO_PROCESS_FINAL_NO_COINCIDE")
         if final_texto and final["lane"] != expected_title:
@@ -219,6 +225,8 @@ def auditar(registros):
         criticos = {
             "XML_ORIGINAL_PROCESS_CON_OTRO_N5",
             "XML_ORIGINAL_LANE_CON_OTRO_N5",
+            "CAPTURADO_PROCESS_CON_OTRO_N5",
+            "CAPTURADO_LANE_CON_OTRO_N5",
             "CONTENIDO_SE_PARECE_MAS_A_OTRA_SOLICITUD",
             "NOMBRES_E_IDS_DE_TAREAS_DIFERENTES",
             "CONTENIDO_CAMBIO_ENTRE_CAPTURADO_Y_CORREGIDO",
@@ -249,7 +257,10 @@ def auditar(registros):
             ),
             "codigo_xml_original_process": source_code,
             "codigo_xml_original_lane": lane_code,
+            "codigo_xml_capturado_process": captured_code,
+            "codigo_xml_capturado_lane": captured_lane_code,
             "proceso_xml_original": original["proceso"],
+            "proceso_xml_capturado": captura["proceso"],
             "proceso_xml_final": final["proceso"],
             "actividades_original": original["actividades"],
             "actividades_capturado": captura["actividades"],
