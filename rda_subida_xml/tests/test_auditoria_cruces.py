@@ -76,6 +76,36 @@ class TestCruces(unittest.TestCase):
                              "xml_corregido_ruta": str(p)}])[0]
             self.assertEqual(audit["estado"], "SIN_INDICIOS_EN_ESTA_AUDITORIA")
 
+    def test_escanea_varios_checkpoints_y_detecta_cruce_entre_lotes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            a, b = "4.4.1.11_P01", "4.4.1.12_P01"
+            tareas_a = ("Registrar consulta", "Clasificar petición",
+                        "Responder cliente", "Cerrar consulta")
+            tareas_b = ("Evaluar amortización", "Consultar saldo",
+                        "Aplicar cuota", "Registrar pago")
+            final_a = root / "final_a.xml"
+            final_a.write_text(xml(a, "Consultas", tareas_b), encoding="utf-8")
+            lote_a = root / "procesados_lote_A.json"
+            lote_b = root / "procesados_lote_B.json"
+            lote_a.write_text(json.dumps({"registros": [{
+                "id_solicitud": "S_A", "id_n5": a, "nombre_proceso": "Consultas",
+                "xml": xml(a, "Consultas", tareas_a),
+                "xml_corregido_ruta": str(final_a),
+            }]}), encoding="utf-8")
+            lote_b.write_text(json.dumps({"registros": [{
+                "id_solicitud": "S_B", "id_n5": b, "nombre_proceso": "Amortización",
+                "xml": xml(b, "Amortización", tareas_b),
+            }]}), encoding="utf-8")
+            _, salida_json, resumen = ejecutar(directorio=root)
+            self.assertEqual(sum(resumen.values()), 2)
+            data = json.loads(salida_json.read_text(encoding="utf-8"))
+            sospechoso = data["registros"][0]
+            self.assertEqual(sospechoso["estado"], "SOSPECHA_ALTA")
+            self.assertIn("procesados_lote_B.json::S_B",
+                          sospechoso["mejor_otra_solicitud"])
+            self.assertEqual(len(data["fuentes"]), 2)
+
     def test_reporte_guarda_resumen_sin_xml_crudo(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
