@@ -141,8 +141,11 @@ class TestCruces(unittest.TestCase):
             self.assertEqual(result["coincidencia_con_su_original"], 0.0)
             self.assertEqual(result["coincidencia_capturado_final"], 1.0)
             self.assertEqual(result["metodo_lectura_capturado"], "xml")
-            self.assertIn("NOMBRES_E_IDS_DE_TAREAS_DIFERENTES",
+            self.assertIn("ACTIVIDADES_CAMBIARON_SUSTANCIALMENTE",
                           result["senales"])
+            self.assertIn("CAPTURADO_PROCESS_CON_OTRO_N5",
+                          result["senales"])
+            self.assertEqual(result["estado"], "SOSPECHA_ALTA")
 
     def test_escanea_varios_checkpoints_y_detecta_cruce_entre_lotes(self):
         with tempfile.TemporaryDirectory() as d:
