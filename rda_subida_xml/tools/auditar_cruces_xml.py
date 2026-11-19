@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import html
 import json
 import re
 import unicodedata
@@ -43,41 +45,85 @@ def codigo_en(texto):
 
 
 def datos_xml(texto):
-    """Metadatos y actividades: nunca se modifica el documento."""
+    """Extraer estructura BPMN sin cambiar el documento.
+
+    Los originales justamente pueden ser XML MALFORMADOS, razón por la que
+    se envían a HERO. Si ElementTree falla, recuperar con cuidado los tags
+    de proceso, lane y tareas del texto para poder detectar CRUCES.
+    Una recuperación textual no equivale a XML válido ni prueba identidad.
+    """
+    result = {
+        "error": "", "metodo": "xml",
+        "nombres": set(), "ids": set(),
+        "proceso": "", "lane": "", "actividades": 0,
+    }
     if not texto:
-        return {"error": "No se dispone del XML", "nombres": set(), "proceso": "",
-                "lane": "", "actividades": 0}
+        result.update(error="No se dispone del XML", metodo="ausente")
+        return result
     try:
         raiz = ET.fromstring(texto)
+        procesos = [x for x in raiz.iter() if local(x.tag) == "process"]
+        p = procesos[0].get("name", "") if len(procesos) == 1 else ""
+        lanes = [x for x in raiz.iter() if local(x.tag) == "lane"
+                 and x.get("id") in ("LanePrincipal", "Lane_Principal")]
+        lane = lanes[0].get("name", "") if len(lanes) == 1 else ""
+        nodos = [x for x in raiz.iter() if local(x.tag) in NODOS]
+        result.update(
+            proceso=p, lane=lane, actividades=len(nodos),
+            nombres={simple(x.get("name", "")) for x in nodos},
+            ids={x.get("id", "") for x in nodos if x.get("id")},
+            error=("" if len(procesos) == 1 else
+                   f"Se encontraron {len(procesos)} elementos process"),
+        )
     except ET.ParseError as exc:
-        return {"error": f"XML no parseable: {exc}", "nombres": set(),
-                "proceso": "", "lane": "", "actividades": 0}
-    procesos = [x for x in raiz.iter() if local(x.tag) == "process"]
-    p = procesos[0].get("name", "") if len(procesos) == 1 else ""
-    lanes = [x for x in raiz.iter() if local(x.tag) == "lane"
-             and x.get("id") in ("LanePrincipal", "Lane_Principal")]
-    lane = lanes[0].get("name", "") if len(lanes) == 1 else ""
-    nodos = [x for x in raiz.iter() if local(x.tag) in NODOS]
-    nombres = {simple(x.get("name", "")) for x in nodos}
-    nombres.difference_update(EXCLUIR)
-    nombres.discard("")
-    return {
-        "error": "" if len(procesos) == 1 else
-                 f"Se encontraron {len(procesos)} elementos process",
-        "nombres": nombres,
-        "proceso": p,
-        "lane": lane,
-        "actividades": len(nodos),
-    }
+        # Deliberadamente tolerante: recoge elementos aun si hay namespaces
+        # rotos, elementos sin cerrar o caracteres sin escapar. Se necesita
+        # un mínimo de evidencia; no considera esta extracción definitiva.
+        result["error"] = f"XML no parseable; inspección textual: {exc}"
+        result["metodo"] = "texto_recuperado"
+        tipo = "|".join(re.escape(x) for x in (
+            "process", "lane", *sorted(NODOS, key=len, reverse=True)
+        ))
+        tags = re.finditer(
+            r"<(?:[A-Za-z][\w.-]*:)?(?P<tag>" + tipo + r")\b(?P<attrs>[^>]*)>",
+            texto, re.I | re.S
+        )
+        def atributo(attrs, key):
+            match = re.search(
+                r"(?<![\w:.-])" + re.escape(key)
+                + r"""\s*=\s*(["'])(.*?)\1""",
+                attrs, re.S | re.I
+            )
+            return html.unescape(match.group(2)) if match else ""
+        for m in tags:
+            name = m.group("tag")
+            lower = name.casefold()
+            attrs = m.group("attrs")
+            n = atributo(attrs, "name")
+            if lower == "process":
+                if not result["proceso"]:
+                    result["proceso"] = n
+            elif lower == "lane":
+                if atributo(attrs, "id") in {"LanePrincipal", "Lane_Principal"}:
+                    result["lane"] = n
+            else:
+                result["actividades"] += 1
+                if n:
+                    result["nombres"].add(simple(n))
+                xid = atributo(attrs, "id")
+                if xid:
+                    result["ids"].add(xid)
+    result["nombres"].difference_update(EXCLUIR)
+    result["nombres"].discard("")
+    return result
 
-
-def similitud(a, b):
-    """Jaccard de actividades nombradas, excluyendo process/lane renombrados."""
-    a, b = a["nombres"], b["nombres"]
-    if not a or not b:
+def similitud(a, b, campo="nombres"):
+    """Jaccard de nombres o IDs de tareas (nunca process/lane)."""
+    x, y = a[campo], b[campo]
+    if not x or not y:
         return None, 0
-    comunes = len(a & b)
-    return comunes / len(a | b), comunes
+    comunes = len(x & y)
+    return comunes / len(x | y), comunes
 
 
 def archivo_xml(ruta):
@@ -120,6 +166,8 @@ def auditar(registros):
         disponible = captura if captura_texto else final
         fase = "capturado" if captura_texto else "final" if final_texto else "sin_archivo"
         score, comunes = similitud(original, disponible)
+        score_ids, comunes_ids = similitud(original, disponible, "ids")
+        score_capture_final, comunes_capture_final = similitud(captura, final)
         posibles = []
         for otro_id, otro in originales.items():
             if (otro_id == key
@@ -151,10 +199,20 @@ def auditar(registros):
                 and len(original["nombres"]) >= 3
                 and len(disponible["nombres"]) >= 3):
             causa.append("ACTIVIDADES_CAMBIARON_SUSTANCIALMENTE")
+        if (score_ids is not None and score_ids < 0.15
+                and len(original["ids"]) >= 4
+                and len(disponible["ids"]) >= 4
+                and score is not None and score < 0.35):
+            causa.append("NOMBRES_E_IDS_DE_TAREAS_DIFERENTES")
+        if (captura_texto and final_texto
+                and score_capture_final is not None
+                and score_capture_final < 0.70
+                and min(len(captura["nombres"]), len(final["nombres"])) >= 3):
+            causa.append("CONTENIDO_CAMBIO_ENTRE_CAPTURADO_Y_CORREGIDO")
         if not captura_texto and not final_texto:
             causa.append("SIN_XML_CAPTURADO_O_FINAL")
-        if original["error"]:
-            causa.append("XML_ORIGINAL_NO_EVALUABLE")
+        if original["error"] and not original["nombres"]:
+            causa.append("XML_ORIGINAL_SIN_ACTIVIDADES_RECUPERABLES")
         if final_texto and final["error"]:
             causa.append("XML_FINAL_NO_EVALUABLE")
 
@@ -162,6 +220,8 @@ def auditar(registros):
             "XML_ORIGINAL_PROCESS_CON_OTRO_N5",
             "XML_ORIGINAL_LANE_CON_OTRO_N5",
             "CONTENIDO_SE_PARECE_MAS_A_OTRA_SOLICITUD",
+            "NOMBRES_E_IDS_DE_TAREAS_DIFERENTES",
+            "CONTENIDO_CAMBIO_ENTRE_CAPTURADO_Y_CORREGIDO",
         }
         estado = (
             "SOSPECHA_ALTA" if criticos.intersection(causa)
@@ -176,6 +236,17 @@ def auditar(registros):
             "estado": estado,
             "senales": ";".join(causa),
             "fase_comparada": fase,
+            "metodo_lectura_original": original["metodo"],
+            "metodo_lectura_capturado": captura["metodo"],
+            "metodo_lectura_final": final["metodo"],
+            "sha256_xml_capturado": (
+                hashlib.sha256(captura_texto.encode("utf-8")).hexdigest()
+                if captura_texto else ""
+            ),
+            "sha256_xml_final": (
+                hashlib.sha256(final_texto.encode("utf-8")).hexdigest()
+                if final_texto else ""
+            ),
             "codigo_xml_original_process": source_code,
             "codigo_xml_original_lane": lane_code,
             "proceso_xml_original": original["proceso"],
@@ -187,6 +258,14 @@ def auditar(registros):
                 round(score, 4) if score is not None else ""
             ),
             "actividad_nombres_comunes": comunes,
+            "coincidencia_ids_con_original": (
+                round(score_ids, 4) if score_ids is not None else ""
+            ),
+            "ids_tareas_comunes": comunes_ids,
+            "coincidencia_capturado_final": (
+                round(score_capture_final, 4)
+                if score_capture_final is not None else ""
+            ),
             "mejor_otra_solicitud": mejor[1] if mejor else "",
             "similitud_con_otra": round(mejor[0], 4) if mejor else "",
             "problemas_lectura": ";".join(
