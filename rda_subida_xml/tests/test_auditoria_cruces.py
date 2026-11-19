@@ -76,6 +76,74 @@ class TestCruces(unittest.TestCase):
                              "xml_corregido_ruta": str(p)}])[0]
             self.assertEqual(audit["estado"], "SIN_INDICIOS_EN_ESTA_AUDITORIA")
 
+    def test_original_malformado_pero_actividades_recuperables(self):
+        # El XML original puede no parsear: es precisamente por ello que
+        # se envió a corregir a HERO. No debemos perder esa evidencia.
+        code = "4.4.1.1_P02"
+        origen = xml(code, "Consulta Cuentas Ahorro PJ", (
+            "Consultar cuenta", "Validar titular",
+            "Revisar saldos", "Mostrar resultado"
+        )) + "<etiqueta-sin-cerrar"
+        extraido = datos_xml(origen)
+        self.assertEqual(extraido["metodo"], "texto_recuperado")
+        self.assertEqual(extraido["actividades"], 4)
+        self.assertEqual(extraido["proceso"], f"{code} Consulta Cuentas Ahorro PJ")
+        self.assertIn("consultar cuenta", extraido["nombres"])
+        self.assertEqual(len(extraido["ids"]), 4)
+
+    def test_reparacion_de_xml_malformado_sin_cambio_semantico(self):
+        with tempfile.TemporaryDirectory() as d:
+            code = "4.4.1.1_P02"
+            tareas = ("Consultar cuenta", "Validar titular",
+                      "Revisar saldos", "Mostrar resultado")
+            original = xml(code, "Consulta Cuentas Ahorro PJ", tareas)
+            original += "<etiqueta-sin-cerrar"
+            final = Path(d) / "capturado.xml"
+            final.write_text(
+                xml(code, "Consulta Cuentas Ahorro PJ", tareas),
+                encoding="utf-8"
+            )
+            row = {
+                "id_solicitud": "S1", "id_n5": code,
+                "nombre_proceso": "Consulta Cuentas Ahorro PJ",
+                "xml": original, "xml_capturado_ruta": str(final),
+            }
+            result = auditar([row])[0]
+            self.assertEqual(result["coincidencia_con_su_original"], 1.0)
+            self.assertEqual(result["coincidencia_ids_con_original"], 1.0)
+            self.assertEqual(result["metodo_lectura_original"], "texto_recuperado")
+            self.assertNotIn("ACTIVIDADES_CAMBIARON", result["senales"])
+
+    def test_capturado_equivocado_pero_corregido_conserva_ese_contenido(self):
+        with tempfile.TemporaryDirectory() as d:
+            code = "4.4.1.1_P02"
+            original_tasks = ("Consultar cuenta", "Validar titular",
+                              "Revisar saldos", "Mostrar resultado")
+            other_tasks = ("Liquidar préstamo", "Registrar amortización",
+                           "Validar intereses", "Notificar pago")
+            origen = xml(code, "Consulta Ahorro", original_tasks)
+            capturado = Path(d) / "capturado.xml"
+            corregido = Path(d) / "corregido.xml"
+            capturado.write_text(
+                xml("4.4.1.11_P01", "Amortización", other_tasks),
+                encoding="utf-8"
+            )
+            corregido.write_text(
+                xml(code, "Consulta Ahorro", other_tasks), encoding="utf-8"
+            )
+            row = {
+                "id_solicitud": "S1", "id_n5": code,
+                "nombre_proceso": "Consulta Ahorro", "xml": origen,
+                "xml_capturado_ruta": str(capturado),
+                "xml_corregido_ruta": str(corregido),
+            }
+            result = auditar([row])[0]
+            self.assertEqual(result["coincidencia_con_su_original"], 0.0)
+            self.assertEqual(result["coincidencia_capturado_final"], 1.0)
+            self.assertEqual(result["metodo_lectura_capturado"], "xml")
+            self.assertIn("NOMBRES_E_IDS_DE_TAREAS_DIFERENTES",
+                          result["senales"])
+
     def test_escanea_varios_checkpoints_y_detecta_cruce_entre_lotes(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
