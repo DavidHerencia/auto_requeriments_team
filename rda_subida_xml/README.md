@@ -582,3 +582,35 @@ y no se reimportan resultados ambiguos automáticamente.
 No volver a ejecutar simplemente `--limite 4` sobre esa misma selección
 sin confirmar ausencia de duplicados. Usar `--ids` con cuatro solicitudes
 reales que todavía no estén importadas.
+
+## Auditoría de cruces de código N5 frente al contenido del XML
+
+Diagnóstico de SOLO LECTURA para identificar si un BPMN importado a ARIS
+tiene un título correcto pero sus actividades pertenecen a otro proceso.
+
+Comando, desde rda_subida_xml:
+
+~~~powershell
+python tools/auditar_cruces_xml.py --checkpoint "data/exportaciones/procesados_NOMBRE_LOTE.json"
+~~~
+
+Se genera un CSV y un JSON llamados auditoria_cruces_FECHA, con resultados
+resumidos y sin contenido XML crudo. No modifica ARIS ni los XML originales.
+
+La auditoría une por id_solicitud: XML original, XML capturado de HERO,
+y XML final corregido. Compara actividades BPMN, nombres y códigos en
+process y lane principal. Una similitud alta con otro XML original puede
+indicar un cruce, pero no demuestra por sí sola que lo haya.
+
+Interpretación: si el XML original tiene un N5 diferente, revisar EXPORT_RDA;
+si el original es correcto pero el capturado contiene otras actividades,
+revisar la salida de ChatGPT; si el capturado es correcto pero el final no,
+revisar postprocesamiento; si el final es correcto pero ARIS muestra otro
+diagrama, revisar la importación en ARIS.
+
+Los estados SOSPECHA_ALTA y REVISAR requieren inspección humana.
+El mensaje de ARIS 'informe completo' no certifica identidad semántica.
+El postprocesamiento actual sincroniza nombres process/lane, pero no
+comprueba que las actividades se hayan conservado.
+
+Pruebas: python -m unittest discover -s tests -v
